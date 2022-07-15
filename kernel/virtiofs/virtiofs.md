@@ -106,3 +106,4 @@ guest# mount -t virtiofs myfs /mnt
 [virtiofs official](https://virtio-fs.gitlab.io/)
 
 [virtiofs per-file dax](https://lwn.net/Articles/872521/)
+[virtiofs per-file_dax2](https://developer.aliyun.com/article/863752)
