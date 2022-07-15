@@ -12,3 +12,7 @@
 * ### Scheduler
     * #### [preempt](./kernel/scheduler/preempt.md)
     * #### [schedule() function](./kernel/scheduler/schedule.md)
+* ### [virtiofs](./kernel/virtiofs/virtiofs.md)
+* ### [fuse](./kernel/FUSE/fuse.md)
+* ### [virtio](./kernel/virtio/virtio.md)
+* ### [dax](./kernel/dax/dax.md)
