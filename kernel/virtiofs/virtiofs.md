@@ -61,7 +61,7 @@ struct fuse_setupmapping_in {
 };
 ```
 
-5. Map file to HVA 
+5. Map file to HVA
 
 virtiofsd 会向 qemu 发送 vhost-user 协议中的 VHOST_USER_SLAVE_FS_MAP 消息，qemu 接收到该消息时，会执行 file mmap() 操作，将这个文件映射到之前 anonymous mmap() 分配的虚拟地址区间的相应偏移处。
 
@@ -100,6 +100,9 @@ guest# mount -t virtiofs myfs /mnt
 ## Reference
 
 [virtio-fs A shared file system for virtual machines](https://www.youtube.com/watch?v=969sXbNX01U&t=1318s)
+
 [virtio-fs A shared file system for virtual machines](https://www.youtube.com/watch?v=EIVOzTsGMMI&t=329s)
+
 [virtiofs official](https://virtio-fs.gitlab.io/)
+
 [virtiofs per-file dax](https://lwn.net/Articles/872521/)
