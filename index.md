@@ -16,3 +16,6 @@
 * ### [fuse](./kernel/FUSE/fuse.md)
 * ### [virtio](./kernel/virtio/virtio.md)
 * ### [dax](./kernel/dax/dax.md)
+* ### vfio
+    * #### [iommu](./kernel/vfio/iommu.md)
+    * #### [sriov](./kernel/vfio/sriov.md)
