@@ -275,3 +275,43 @@ So we call these stuff dcache. Let's pick up /a/b/c again, how does it look now?
                                                                                  +---> | d_child              |  ---->  | d_child              |
                                                                                        | d_subdirs            |         | d_subdirs            |
                                                                                        +----------------------+         +----------------------+
+
+
+The dh line makes the graph a bit mess, that's why I explicitly mark it 'dh'. It means all the dentries are in a hashtable. The hash key is calculated by a function about _d___parent and d_name. I'll add some detail about this later if I get some minutes. For now, you can need to known once you walk to dentry x, you look up the next dentry y by (x, 'y').
+As you already see, I simplify d_name a bit, it is actually a structure contains not only
+the string of name but also the hash value and hash len of it, this is for effciency concern.
+
+I know what you are thinking about: how about cache miss case, like the first time?
+That's not a big problem, since we have d_inode in dentry. if subdirs are not cached
+just load them from storage. I call it the cold booting, AKA slow path.
+You may have another question, where does the inode come from?
+Hmm, good question, it surely come from the disk, but we don't load them everytime.
+We also keep a cache for them like what we do for dentry, and it's called icache.
+icache is more like a slave of dcache, or we can say the dcache is the control side.
+Because we add/delete inodes in icache when we operate dcache.
+I'm not going to dive into icache more for now it's trivival after you understand the
+above content. And in case you ask 'what other caches do we have in vfs', I'll simply
+post a small piece of code, hope this can help:
+
+```c
+void __init vfs_caches_init(void)
+{
+	names_cachep = kmem_cache_create_usercopy("names_cache", PATH_MAX, 0,
+			SLAB_HWCACHE_ALIGN|SLAB_PANIC, 0, PATH_MAX, NULL);
+
+	dcache_init();
+	inode_init();
+	files_init();
+	files_maxfiles_init();
+	mnt_init();
+	bdev_cache_init();
+	chrdev_init();
+}
+```
+
+At last, this is a simple introducation of (some essencial data structures and their
+relationships) vfs. If you want more, please read the code.
+
+## Reference
+
+[EXT4 WIKI](https://ext4.wiki.kernel.org/index.php/Ext4_Disk_Layout)
