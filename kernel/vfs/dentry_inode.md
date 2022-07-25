@@ -280,6 +280,7 @@ So we call these stuff dcache. Let's pick up /a/b/c again, how does it look now?
                                                                                        +----------------------+         +----------------------+
 ```
 
+(I've try my best to draw it...let me know (through github issues) if you make it better, I'll appreciate it a lot)
 The dh line makes the graph a bit mess, that's why I explicitly mark it 'dh'. It means all the dentries are in a hashtable. The hash key is calculated by a function about _d___parent and d_name. I'll add some detail about this later if I get some minutes. For now, you can need to known once you walk to dentry x, you look up the next dentry y by (x, 'y').
 As you already see, I simplify d_name a bit, it is actually a structure contains not only
 the string of name but also the hash value and hash len of it, this is for effciency concern.
