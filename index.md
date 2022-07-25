@@ -1,4 +1,7 @@
 # Catalog
+
+This blog is based on github pages, comments are welcome through github issues :)
+
 * ### [PCIe protocol](./kernel/pcie/pcie.md)
 * ### Nvme Driver
     * #### [nvme driver init](./kernel/nvme/driver_init.md)
