@@ -1,3 +1,5 @@
+{:toc}
+
 # dentry && inode
 
 An essencial question about filesystem is: what happens when we open a file. To
