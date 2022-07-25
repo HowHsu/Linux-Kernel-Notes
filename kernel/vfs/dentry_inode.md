@@ -23,6 +23,8 @@ Let's look into a block group briefly.
  file.
  * others are data blocks.
 
+## inode
+
 Here let's focus on inode, this is the key to a file. Below is the layout of ondisk
 inode structure.
 
@@ -107,5 +109,169 @@ Just like what I said, the above is called the legacy way. Modern ext4 filesyste
 Extent deserves a detail analysis in a seperate article.
 [ext4 extent](./extent.md)
 
+## direntry
+
+In Linux, everything is file, so a directory is also a file, it has its own inode. The content of it are entries pointing to subdirectories and files, the entry is called direntry(directory entry), it contains file/directory name and their inode numbers.
+
+```c
+struct ext4_dir_entry_2 {
+	__le32	inode;			/* Inode number */
+	__le16	rec_len;		/* Directory entry length */
+	__u8	name_len;		/* Name length */
+	__u8	file_type;		/* See file type macros EXT4_FT_* below */
+	char	name[EXT4_NAME_LEN];	/* File name */
+};
+```
+
+And remember, the root directory inode number is always 2 in ext4.
+
+## dentry
+
+Ok, now that you know how we find all the data blocks of a file from its inode, let's walk through an example: A user is opening a file, what does he
+have? A file path, yes, that's all he has. Say it is /a/b/c, how the operating system find
+the file c?
+We can first divide the path to several components: ['/', 'a', 'b', 'c']. Now let's go from
+it:
+
+(1) ['/', 'a', 'b', 'c']    the inode is 2, fetch data blocks of it, we get all the direntries of '/'
+      ^
+
+(2) ['/', 'a', 'b', 'c']    compare 'a' with direntries we got from (1), we find inode number of file 'a'
+           ^
+
+(3) ['/', 'a', 'b', 'c']    like (2), compare 'b' with direntries from inode a, we get inode b
+                ^
+
+(4) ['/', 'a', 'b', 'c']    same step like above, we finally get inode c
+                     ^
 
 
+Let's draw a simple graph to make it clearer.
+
+   inode 2('/')
+      |
+      |
++------------+
+| direntry 0 |
+| direntry 1 |
+| direntry 2 |
+| .......... |
+| direntry a | -----> inode a ----> +------------+
+| .......... |                      | direntry 0 |
++------------+                      | direntry 1 |
+                                    | direntry 2 |
+                                    | .......... |
+                                    | direntry b | ----> inode b ----> +------------+
+                                    | .......... |                     | direntry 0 |
+                                    +------------+                     | direntry 1 |
+                                                                       | direntry 2 |
+                                                                       | .......... |
+                                                         inode c <---- | direntry c |
+                                                                       | .......... |
+                                                                       +------------+
+
+All right, I know you'll ask question like "what if a user use a relative path?"
+That's a good question, to support relative path, every directory file has two fixed
+direntries----'.' and '..'. '.' means the current directory, while '..' means the
+parent directory. From '..', we can easily get the inode number of the parent directory.
+
+Does it look great? Totally not, because we have to access disk everytime we visit data
+blocks to fetch direntries, that's a disaster in terms of efficiency.
+
+So obviously Linux doesn't do it in this way. To make it faster, dentry is introduced.
+dentry is something like direntry, you can see it as the memory version of direntry.
+Yes, it only exist in memory.
+
+```c
+struct dentry {
+	/* RCU lookup touched fields */
+	unsigned int d_flags;		/* protected by d_lock */
+	seqcount_spinlock_t d_seq;	/* per dentry seqlock */
+	struct hlist_bl_node d_hash;	/* lookup hash list */
+	struct dentry *d_parent;	/* parent directory */
+	struct qstr d_name;
+	struct inode *d_inode;		/* Where the name belongs to - NULL is
+					 * negative */
+	unsigned char d_iname[DNAME_INLINE_LEN];	/* small names */
+
+	/* Ref lookup also touches following */
+	struct lockref d_lockref;	/* per-dentry lock and refcount */
+	const struct dentry_operations *d_op;
+	struct super_block *d_sb;	/* The root of the dentry tree */
+	unsigned long d_time;		/* used by d_revalidate */
+	void *d_fsdata;			/* fs-specific data */
+
+	union {
+		struct list_head d_lru;		/* LRU list */
+		wait_queue_head_t *d_wait;	/* in-lookup ones only */
+	};
+	struct list_head d_child;	/* child of parent list */
+	struct list_head d_subdirs;	/* our children */
+	/*
+	 * d_alias and d_rcu can share memory
+	 */
+	union {
+		struct hlist_node d_alias;	/* inode alias list */
+		struct hlist_bl_node d_in_lookup_hash;	/* only for in-lookup ones */
+	 	struct rcu_head d_rcu;
+	} d_u;
+} __randomize_layout;
+```
+
+Once we access/open a file by walking through a path, we cache the direntries we
+visited, as dentries. Next time we do path walking, we may leverage these dentries.
+So we call these stuff dcache. Let's pick up /a/b/c again, how does it look now?
+
+
+
+      dentry_hashtable------------dh-------+
+                                           |
+                                           |
+  +----------------------+                 |
+  |       superblock     |                 V
+  +----------------------+       +----------------------+
+  | s_root               | ----> |       dentry /       |
+  | ......               |       +----------------------+
+  +----------------------+       | d_name = {hash, '/'} |
+       ^                         | d_parent             |
+       |                         | d_inode = inode_/    |
+       |                         | d_sb                 |
+       |                         | d_child              |
+       |    +------------------- | d_subdirs            |
+       |    |                    +----------------------+
+       |    |                               |
+       |    |                      +---dh---+
+       |    |                      V
+       |    |         +----------------------+        +------------------------+     +------------------------+
+       |    |         |       dentry a       | -dh--> |       dentry usr       | --> |       dentry var       | ---+
+       |    |         +----------------------+        +------------------------+     +------------------------+    |
+       |    |         | d_name = {hash, 'a'} |        | d_name = {hash, 'usr'} |     | d_name = {hash, 'var'} |    |
+       |    |         | d_parent = dentry /  |        | d_parent = dentry /    |     | d_parent = dentry /    |    |
+       |    |         | d_inode = inode_a    |        | d_inode = inode_usr    |     | d_inode = inode_var    |    |
+       +------------- | d_sb                 |        | d_sb                   |     | d_sb                   |    d
+            +-------> | d_child              | -----> | d_child                | --> | d_child                |    h
+                      | d_subdirs            | --+    | d_subdirs              |     | d_subdirs              |    |
+                      +----------------------+   |    +------------------------+     +------------------------+    |
+                                                 |                                                                 |
+                                                 |    +----------------------+       +----------------------+      |
+                                           +--------- |       dentry b       | <-dh- |       dentry x       | <----+
+                                           |     |    +----------------------+       +----------------------+
+                                           |     |    | d_name = {hash, 'b'} |       | d_name = {hash, 'x'} |
+                                           |     |    | d_parent = dentry a  |       | d_parent = dentry a  |
+                                           |     |    | d_inode = inode_b    |       | d_inode = inode_x    |
+                                           |     |    | d_sb                 |       | d_sb                 |
+                                           |     +--> | d_child              | ----> | d_child              |
+                                           |          | d_subdirs            | --+   | d_subdirs            |
+                                           |          +----------------------+   |   +----------------------+
+                                           |                                     |
+                                           |                                     |
+                                           |                                     |     +----------------------+         +----------------------+
+                                           +-------------------dh--------------------> |       dentry c       | --dh--> |       dentry y       |
+                                                                                 |     +----------------------+         +----------------------+
+                                                                                 |     | d_name = {hash, 'c'} |         | d_name = {hash, 'y'} |
+                                                                                 |     | d_parent = dentry b  |         | d_parent = dentry b  |
+                                                                                 |     | d_inode = inode_c    |         | d_inode = inode_y    |
+                                                                                 |     | d_sb                 |         | d_sb                 |
+                                                                                 +---> | d_child              |  ---->  | d_child              |
+                                                                                       | d_subdirs            |         | d_subdirs            |
+                                                                                       +----------------------+         +----------------------+
