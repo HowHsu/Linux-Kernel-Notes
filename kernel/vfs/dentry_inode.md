@@ -133,6 +133,7 @@ the file c?
 We can first divide the path to several components: ['/', 'a', 'b', 'c']. Now let's go from
 it:
 
+```c
 (1) ['/', 'a', 'b', 'c']    the inode is 2, fetch data blocks of it, we get all the direntries of '/'
       ^
 
@@ -144,10 +145,11 @@ it:
 
 (4) ['/', 'a', 'b', 'c']    same step like above, we finally get inode c
                      ^
-
+```
 
 Let's draw a simple graph to make it clearer.
 
+```c
    inode 2('/')
       |
       |
@@ -169,6 +171,7 @@ Let's draw a simple graph to make it clearer.
                                                          inode c <---- | direntry c |
                                                                        | .......... |
                                                                        +------------+
+```
 
 All right, I know you'll ask question like "what if a user use a relative path?"
 That's a good question, to support relative path, every directory file has two fixed
@@ -223,7 +226,7 @@ visited, as dentries. Next time we do path walking, we may leverage these dentri
 So we call these stuff dcache. Let's pick up /a/b/c again, how does it look now?
 
 
-
+```c
       dentry_hashtable------------dh-------+
                                            |
                                            |
@@ -275,7 +278,7 @@ So we call these stuff dcache. Let's pick up /a/b/c again, how does it look now?
                                                                                  +---> | d_child              |  ---->  | d_child              |
                                                                                        | d_subdirs            |         | d_subdirs            |
                                                                                        +----------------------+         +----------------------+
-
+```
 
 The dh line makes the graph a bit mess, that's why I explicitly mark it 'dh'. It means all the dentries are in a hashtable. The hash key is calculated by a function about _d___parent and d_name. I'll add some detail about this later if I get some minutes. For now, you can need to known once you walk to dentry x, you look up the next dentry y by (x, 'y').
 As you already see, I simplify d_name a bit, it is actually a structure contains not only
