@@ -106,7 +106,7 @@ There is a little bit difference between the last 3 items(indirect pointers).
 12nd can only have one layer of indirect block. 13th can have two layers as you can see in the picture. 14th can have three layers.
 This significantly expand the size of file it supports. Let's do some simple
 math, say a block is 4KB, then a block contains 4KB / 4B = 2^10 items. For
-the i_block[14], there are 1\*2^10\*2^10\*2^10 = 2^30 blocks. So i_block[14] supports 2^30\*4KB = 4TB. Yes, ext4 supports a single file large as 4TB...in this way.
+the i_block[14], there are 1\*2^10\*2^10\*2^10 = 2^30 blocks. So i_block[14] supports 2^30\*4KB = 4TB. Yes, ext4 supports a single file as large as about 4TB...in this way.
 Just like what I said, the above is called the legacy way. Modern ext4 filesystem these days use a new way to index file blocks----extent.
 Extent deserves a detail analysis in a seperate article.
 [ext4 extent](./extent.md)
