@@ -174,5 +174,15 @@ to position [offset, offset+len)  in file fd. From [offset, offset+len) we can
 get the logical blocks range [offset/blk_sz, (offset+len)/blk_sz). After we get
 the inode of this file, we have to translate the logical range to physical ranges.
 
+### ext4 dio write
+
+Pick up ext4 direct write as an example, let's see how the translation goes. Let's
+first have a look at the big picture.
+
+![](./images/ext4_file_write_iter.png)
+
+
+
+
 
 ## Extent Status Tree
