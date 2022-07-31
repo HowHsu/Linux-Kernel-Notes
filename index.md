@@ -18,6 +18,7 @@ This blog is based on github pages, comments are welcome through github issues :
 * ### VFS
     * #### [mount](./kernel/vfs/mount.md)
     * #### [dentry_inode](./kernel/vfs/dentry_inode.md)
+    * #### [extent](./kernel/vfs/extent.md)
 * ### [virtiofs](./kernel/virtiofs/virtiofs.md)
 * ### [fuse](./kernel/FUSE/fuse.md)
 * ### [virtio](./kernel/virtio/virtio.md)
