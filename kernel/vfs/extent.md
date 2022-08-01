@@ -167,6 +167,71 @@ struct ext4_extent_header {
 - ext4_extent
   This is the entry in leaf node.
 
+## Extent Status Tree
+
+Now that we are clear about the ondisk layout, let's turn to the memory. Like inode
+and dentry, extent also has memory cache, it's called extent status tree.
+
+```c
+/*
+ * fourth extended file system inode data in memory
+ */
+struct ext4_inode_info {
+	struct rw_semaphore i_data_sem;
+	struct inode vfs_inode;
+	struct jbd2_inode *jinode;
+
+	/* extents status tree */
+	struct ext4_es_tree i_es_tree;
+	rwlock_t i_es_lock;
+	struct list_head i_es_list;
+	unsigned int i_es_all_nr;	/* protected by i_es_lock */
+	unsigned int i_es_shk_nr;	/* protected by i_es_lock */
+	ext4_lblk_t i_es_shrink_lblk;	/* Offset where we start searching for
+					   extents to shrink. Protected by
+					   i_es_lock  */
+};
+```
+
+ext4_inode_info is the memory version ext4_inode. i_es_tree represents the extent
+status tree.
+```c
+struct ext4_es_tree {
+	struct rb_root root;
+	struct extent_status *cache_es;	/* recently accessed extent */
+};
+```
+
+The es tree is organized as a red black tree. cache_es is the recent visited item,
+AKA a cache of cache. A node in this rb tree is:
+
+```c
+struct extent_status {
+	struct rb_node rb_node;
+	ext4_lblk_t es_lblk;	/* first logical block extent covers */
+	ext4_lblk_t es_len;	/* length of extent in block */
+	ext4_fsblk_t es_pblk;	/* first physical block */
+};
+```
+
+Each node is a cache of a disk extent. The rb tree is sorted by es_lblk----the start
+block address this extent covers.
+
+Ok, the name <extent status> may be confusing, the word status here means one of:
+
+```c
+#define EXTENT_STATUS_WRITTEN	(1 << ES_WRITTEN_B)
+#define EXTENT_STATUS_UNWRITTEN (1 << ES_UNWRITTEN_B)
+#define EXTENT_STATUS_DELAYED	(1 << ES_DELAYED_B)
+#define EXTENT_STATUS_HOLE	(1 << ES_HOLE_B)
+#define EXTENT_STATUS_REFERENCED	(1 << ES_REFERENCED_B)
+```
+
+The status is represented by     . Now let's look into each of them, this is related
+with the initative of the es tree.
+
+
+
 ## Translation
 
 A write request is like write(fd, offset, buf, len), means writing data [buf, buf+len)
@@ -179,11 +244,27 @@ the inode of this file, we have to translate the logical range to physical range
 Pick up ext4 direct write as an example, let's see how the translation goes. As this
 is highly related with iomap, please read [IOMAP](./iomap.md) first, there is a big
 picture which describes the whole process of ext4 dio write. Here let's focus on
-the extent part.
+the extent part. As being said in [IOMAP](./iomap.md), iomap_begin() does the translation,
+which is ext4_iomap_begin() in ext4 filesystem.
+
+ext4_iomap_begin() is simple, it defines a struct ext4_map_blocks and initializes
+its members, then calls ext4_map_blocks().
+
+```c
+struct ext4_map_blocks {
+	ext4_fsblk_t m_pblk;
+	ext4_lblk_t m_lblk;
+	unsigned int m_len;
+	unsigned int m_flags;
+};
+```
+
+struct ext4_map_blocks is used to store a mapping, you can see it as 'ext4\'s private
+struct iomap'. And it indeed will deliver its info to struct iomap.
 
 
 
 
 
 
-## Extent Status Tree
+
