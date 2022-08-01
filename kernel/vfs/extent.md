@@ -176,10 +176,11 @@ the inode of this file, we have to translate the logical range to physical range
 
 ### ext4 dio write
 
-Pick up ext4 direct write as an example, let's see how the translation goes. Let's
-first have a look at the big picture.
+Pick up ext4 direct write as an example, let's see how the translation goes. As this
+is highly related with iomap, please read [IOMAP](./iomap.md) first, there is a big
+picture which describes the whole process of ext4 dio write. Here let's focus on
+the extent part.
 
-![](./images/ext4_file_write_iter.png)
 
 
 
