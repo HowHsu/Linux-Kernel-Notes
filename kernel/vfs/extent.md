@@ -169,6 +169,8 @@ struct ext4_extent_header {
 
 ## Extent Status Tree
 
+### data structure
+
 Now that we are clear about the ondisk layout, let's turn to the memory. Like inode
 and dentry, extent also has memory cache, it's called extent status tree.
 
@@ -177,7 +179,7 @@ and dentry, extent also has memory cache, it's called extent status tree.
  * fourth extended file system inode data in memory
  */
 struct ext4_inode_info {
-	struct rw_semaphore i_data_sem;
+ 	struct rw_semaphore i_data_sem;
 	struct inode vfs_inode;
 	struct jbd2_inode *jinode;
 
@@ -210,14 +212,16 @@ struct extent_status {
 	struct rb_node rb_node;
 	ext4_lblk_t es_lblk;	/* first logical block extent covers */
 	ext4_lblk_t es_len;	/* length of extent in block */
-	ext4_fsblk_t es_pblk;	/* first physical block */
+	ext4_fsblk_t es_pblk;	/* first physical block */ 
 };
 ```
 
 Each node is a cache of a disk extent. The rb tree is sorted by es_lblk----the start
 block address this extent covers.
 
-Ok, the name <extent status> may be confusing, the word status here means one of:
+### EXTENT_STATUS_xxx flags
+
+Ok, the name \<extent status\> may be confusing, the word 'status' here means one of:
 
 ```c
 #define EXTENT_STATUS_WRITTEN	(1 << ES_WRITTEN_B)
@@ -230,7 +234,33 @@ Ok, the name <extent status> may be confusing, the word status here means one of
 The status is represented by     . Now let's look into each of them, this is related
 with the initative of the es tree.
 
+ - `WRITTEN`
+    this is the normal case, an es node is a cache version of the ondisk extent
+ - `UNWRITTEN`
+    this is also cache version of an ondisk extent. The difference is the ondisk
+    data blocks hasn't been touched yet. This is useful for syscall like fallocate().
+    fallocate() allows you to allocate blocks to a file without filling zeroes.
+    Think about the situation when there is no es tree: if you want to generate
+    a file of 4GB, you have to fill all the 4GB blocks to zeroes. With es tree,
+    you can just set up metadata like the extent and extent status, and mark it as
+    UNWRITTEN, and allocate data blocks in block map, no need to do any data IO.
+ - `HOLE`
+    stands for a hole in a file, in this case, the pblk is meaningless. The file
+    logical range doesn't have it's physical range ondisk.
+ - `DELAYED`
+    This is used by a feature called delay allocation. Normally, when a buffered
+    write request writes some data to the page cache and expands the file size,
+    it should allocate blocks ondisk immediately.
+    But actually we can delay the allocation to the writeback period, this will
+    improve the latency. Think about the situation of no es tree: to distinguish
+    HOLE and DELAYED extent, we have to look into the page cache to see if there
+    are pages in the range. That makes things complicated and may cause bugs.
+    (comments are welcome here: why it's complicated? I just get this from mail list)
+    With this flag, we can do all these by just checking this flag.
+ - `REFERENCED`
+    undiscovered. TOBEDONE.
 
+The above flags are stored in the highest (five) bits in extent_status->es_pblk.
 
 ## Translation
 
@@ -247,8 +277,9 @@ picture which describes the whole process of ext4 dio write. Here let's focus on
 the extent part. As being said in [IOMAP](./iomap.md), iomap_begin() does the translation,
 which is ext4_iomap_begin() in ext4 filesystem.
 
-ext4_iomap_begin() is simple, it defines a struct ext4_map_blocks and initializes
-its members, then calls ext4_map_blocks().
+ext4_iomap_begin() is simple:
+ - it defines a struct ext4_map_blocks and initializes its members, then calls
+   ext4_map_blocks().
 
 ```c
 struct ext4_map_blocks {
