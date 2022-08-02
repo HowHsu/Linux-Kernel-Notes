@@ -277,6 +277,8 @@ picture which describes the whole process of ext4 dio write. Here let's focus on
 the extent part. As being said in [IOMAP](./iomap.md), iomap_begin() does the translation,
 which is ext4_iomap_begin() in ext4 filesystem.
 
+### ext4_iomap_begin()
+
 ext4_iomap_begin() is simple:
  - it defines a struct ext4_map_blocks and initializes its members, then calls
    ext4_map_blocks().
@@ -291,7 +293,70 @@ struct ext4_map_blocks {
 ```
 
 struct ext4_map_blocks is used to store a mapping, you can see it as 'ext4\'s private
-struct iomap'. And it indeed will deliver its info to struct iomap.
+struct iomap'. And it indeed will deliver its info to struct iomap at last.
+
+ - ext4_map_blocks()
+   this is the main dish, we'll dive into it later.
+
+ - ext4_set_iomap()
+   After we get the mapping, we need to fill the struct iomap by struct ext4_map_blocks.
+   This basically involves setting up:
+   - iomap->flags
+
+	```c
+	/*
+	 * Writes that span EOF might trigger an I/O size update on completion,
+	 * so consider them to be dirty for the purpose of O_DSYNC, even if
+	 * there is no other metadata changes being made or are pending.
+	 */
+	iomap->flags = 0;
+	if (ext4_inode_datasync_dirty(inode) ||
+	    offset + length > i_size_read(inode))
+		iomap->flags |= IOMAP_F_DIRTY;
+
+	if (map->m_flags & EXT4_MAP_NEW)
+		iomap->flags |= IOMAP_F_NEW;
+
+	```
+        TOBEDONE: analyze IOMAP_F_DIRTY and IOMAP_F_NEW.
+
+   - iomap->bdev
+
+	```c
+	if (flags & IOMAP_DAX)
+		iomap->dax_dev = EXT4_SB(inode->i_sb)->s_daxdev;
+	else
+		iomap->bdev = inode->i_sb->s_bdev;
+	```
+
+   - iomap->offset && iomap->length
+
+	```c
+	iomap->offset = (u64) map->m_lblk << blkbits;
+	iomap->length = (u64) map->m_len << blkbits;
+	```
+
+   - iomap->type && iomap->addr
+
+	```c
+	if (map->m_flags & EXT4_MAP_UNWRITTEN) {
+		iomap->type = IOMAP_UNWRITTEN;
+		iomap->addr = (u64) map->m_pblk << blkbits;
+		if (flags & IOMAP_DAX)
+			iomap->addr += EXT4_SB(inode->i_sb)->s_dax_part_off;
+	} else if (map->m_flags & EXT4_MAP_MAPPED) {
+		iomap->type = IOMAP_MAPPED;
+		iomap->addr = (u64) map->m_pblk << blkbits;
+		if (flags & IOMAP_DAX)
+			iomap->addr += EXT4_SB(inode->i_sb)->s_dax_part_off;
+	} else {
+		iomap->type = IOMAP_HOLE;
+		iomap->addr = IOMAP_NULL_ADDR;
+	}
+	```
+
+### ext4_map_blocks()
+
 
 
 
