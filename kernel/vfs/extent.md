@@ -153,12 +153,13 @@ struct ext4_extent_header {
 - ext4_extent_idx
   ei_leaf_lo, ei_leaf_hi together stand for the physical block number of next
   layer B+ tree node.
-  ei_block is the logical block number. Given the target logical block is x, how
-  can we find leaf from root?
-  For example: a non-leaf node is:`[lblk0, ..][lblk1, ..][lblk2, ..][lblk3, ..]`
+  ei_block is the logical block number. Given the current logical block is x, how
+  can we find leaf from it?
+  For example: the current non-leaf node where we are is:
+  `[lblk0, ..][lblk1, ..][lblk2, ..][lblk3, ..]`
   We can compare x with lblk0, lbk1,2 and 3 to see which idx it locates and then
-  go to the next layer.(this is basic knowledge of B+ tree, you can refer to wiki
-  or some data structure materials)
+  go to the next layer, to be more accurate, we can do binary search here (this is
+  basic knowledge of B+ tree, you can refer to wiki or some data structure materials)
 
 - ext4_extent_tail
   Just a checksum. Note: we don't need this for i_block in inode, since inode is
@@ -357,10 +358,154 @@ struct iomap'. And it indeed will deliver its info to struct iomap at last.
 
 ### ext4_map_blocks()
 
+I have to say that I haven't figured out all the detail of it. I'll explain it as
+possible as I can.
+Generally speaking, ext4_map_blocks() does two things:
+ - look up the mapping
+	- fast path: look it up in es tree
+	- slow path: look it up in extent tree
+		- look up needed blocks (extent node) in per cpu array bh_lrus
+		- look up needed blocks in the page cache of the device file
+		- page cache miss, load needed blocks from disk(I'm not sure here)
+ - handle the mapping
 
+#### ext4_es_lookup_extent
 
+This one is super simple, we give it the desired logical block number, it search
+the rb tree for the right node. I'm not gona do code analysis for it here, the code
+explains itself well.
 
+After get the extent, we can update struct ext4_map_blocks now. This includes
+`map->pblk`, `map->m_flags` and `map->m_len`. Here we must be clear about the m_flags:
 
+```
+EXTENT_STATUS_WRITTEN --> EXT4_MAP_MAPPED
+EXTENT_STATUS_UNWRITTEN --> EXT4_MAP_UNWRITTEN
+EXTENT_STATUS_DELAYED --> ?
+EXTENT_STATUS_HOLE --> ?
+```
+#### ext4_ext_map_blocks()
 
+If we fail to find the target extent in es tree, we have to search the extent tree.
+And we have to hold the rw semaphore ext4_inode_info->i_data_sem.
 
+```
+in ext4_map_blocks():
 
+	down_read(&EXT4_I(inode)->i_data_sem);
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)) {
+		retval = ext4_ext_map_blocks(handle, inode, map, 0);
+	} else {
+		retval = ext4_ind_map_blocks(handle, inode, map, 0);
+	}
+```
+
+One thing we can obviously see is there are two ways to organize the mapping.
+One is the legacy mode----indirect mapping, the other one is the extent tree.
+And a flag EXT4_INODE_EXTENTS in inode controls which way to use.
+(So theoretically a filesystem can have two methods in use at the same time?)
+
+Ok, let's jump into the function.
+
+ - `path = ext4_find_extent(inode, map->m_lblk, NULL, 0);`
+	the first thing ext4_ext_map_blocks() does is searching the target extent
+	in the extent tree.
+	```c
+	struct ext4_ext_path {
+		ext4_fsblk_t			p_block; // physical block number
+		__u16				p_depth;
+		__u16				p_maxdepth;
+		struct ext4_extent		*p_ext; // to the extent if it's leaf
+		struct ext4_extent_idx		*p_idx; // to the idx node if it's non-leaf
+		struct ext4_extent_header	*p_hdr; // to the extent header
+		struct buffer_head		*p_bh; // to the block
+	};
+
+	```
+	the return value is an array `path[]`
+	`struct ext4_ext_path *path` records the path from root to leaf during
+	the walking. Meaning of members are clear, here I want to mention `struct buffer_head`.
+	It stands for a disk block, and is used to manage the block.
+	```c
+	struct buffer_head {
+		unsigned long b_state;		/* buffer state bitmap (see above) */
+		struct buffer_head *b_this_page;/* circular list of page's buffers */
+		struct page *b_page;		/* the page this bh is mapped to */
+
+		sector_t b_blocknr;		/* start block number */
+		size_t b_size;			/* size of mapping */
+		char *b_data;			/* pointer to data within the page */
+
+		struct block_device *b_bdev;
+		bh_end_io_t *b_end_io;		/* I/O completion */
+		void *b_private;		/* reserved for b_end_io */
+		struct list_head b_assoc_buffers; /* associated with another mapping */
+		struct address_space *b_assoc_map;	/* mapping this buffer is
+							   associated with */
+		atomic_t b_count;		/* users using this buffer_head */
+		spinlock_t b_uptodate_lock;	/* Used by the first bh in a page, to
+						 * serialise IO completion of other
+						 * buffers in the page */
+	};
+	```
+
+	Some one may ask why don't we just use struct page to manage a block. The reason
+	is that block size can be different with page size. I'm not sure but it seems
+	that usually block size <= page size. So suppose block size is 1024 Bytes and
+	page size is 4KB, then the relationship is like this:
+
+	```c
+	+-------------+
+	| struct page |
+        +-------------+              +--------------------+
+        |   private   |------------->| struct buffer_head |
+        |             |              +--------------------+
+        |   .......   |   +--------->|      b_this_page   |--+
+        +-------------+   |  +-------|      b_page        |  |
+               ^          |  |       |      b_blocknr     |  |
+               |          |  |       |      b_size        |  |
+	       |          |  |       |      b_data        |--|---------+
+	       |       +--+  |       |      b_bdev        |  |         |
+	       |       |     |       |      ......        |  |         |
+	       |       |     |       +--------------------+  |         |
+               |       |     |                               |         |                             +---the-disk--+
+               |       |     |       +--------------------+  |         |                          +->|             |
+               |       |     |       | struct buffer_head |  |         |                         /   |             |
+               |       |     |       +--------------------+  |         |                        /    +-------------+
+               |       |     |   +---|      b_this_page   |<-+         |                       /     |             |
+               +-------------+---|---|      b_page        |            |      +---the-page--+ /      |             |
+                       |     |   |   |      b_blocknr     |            +----->|             |/       +-------------+
+                       |     |   |   |      b_size        |                   |             |        |             |
+                       |     |   |   |      b_data        |------------+      +-------------+        |             |
+                       |     |   |   |      b_bdev        |            |      |             |        +-------------+
+                       |     |   |   |      ......        |            +----->|             |------->|             |
+                       |     |   |   +--------------------+                   +-------------+        |             |
+                       |     |   |                                            |             |        +-------------+
+                       |     |   |   +--------------------+           +------>|             |\       |             |
+                       |     |   |   | struct buffer_head |           |       +-------------+ \      |             |
+                       |     |   |   +--------------------+           |       |             |  \     +-------------+
+                       |     |   +-->|      b_this_page   |--+        |   +-->|             |\  +--->|             |
+                       |     +-------|      b_page        |  |        |   |   +-------------+ \      |             |
+                       |     |       |      b_blocknr     |  |        |   |                    \     +-------------+
+                       |     |       |      b_size        |  |        |   |                     \    |             |
+                       |     |       |      b_data        |--|--------+   |                      \   |             |
+                       |     |       |      b_bdev        |  |            |                       \  +-------------+
+                       |     |       |      ......        |  |            |                        +>|             |
+                       |     |       +--------------------+  |            |                          |             |
+                       |     |                               |            |                          +-------------+
+                       |     |       +--------------------+  |            |                          |             |
+                       |     |       | struct buffer_head |  |            |                          |             |
+                       |     |       +--------------------+  |            |                          +-------------+
+                       +-----|-------|      b_this_page   |<-+            |
+                             +-------|      b_page        |               |
+                                     |      b_blocknr     |               |
+                                     |      b_size        |               |
+                                     |      b_data        |---------------+
+                                     |      b_bdev        |
+                                     |      ......        |
+                                     +--------------------+
+
+	```
+
+	b_this_page, b_page, b_data are clearly explained in this picture. Here
+	notice b_this_page, it forms a circular list.
