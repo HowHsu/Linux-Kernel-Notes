@@ -450,3 +450,128 @@ Ok, let's jump into the function. I'll list the main operation it does in order.
 	blocks(if block size < page size). These blocks are caches of filesystem's
 	ondisk blocks.**
 
+##### `ext4_find_extent(inode, map->m_lblk, NULL, 0);`
+
+This function searches the ondisk extent tree to get the desired extent. But it
+doesn't load blocks from disk directly. Remember in [bdev filesystem](./bdev.md)
+we know the blkdev file also has page cache.
+
+ - `path = kcalloc(depth + 2, sizeof(struct ext4_ext_path), gfp_flags);`
+
+   The first thing is allocating memory for path[]. Notice the size isn't depth+1
+   but depth+2 since the B+ tree node may be splited and finally get a new layer
+
+ - `path[0].p_hdr = eh;`
+   Init p_hdr for path[0], and it is `eh = ext_inode_hdr(inode);` It's easy to get
+   extent header from inode, see [Ondisk struture](## Ondisk structure) section.
+
+ - `i = depth`
+   i is used as an iterator in the later loop which is the main logic of this function
+   depth is `depth = ext_depth(inode);` which finally come from `ext4_extent_header->eh_depth`
+   (remember the leaf has depth = 0 and the root has the max depth, so hdr->eh_depth
+    means the depth of the tree whose root is the node where hdr locates)
+
+   This and the previous step are to init the start point `path[0]` of the tree walking
+
+ - A loop walking though the extent tree
+
+   ```c
+	while (i) {
+		ext_debug(inode, "depth %d: num %d, max %d\n",
+			  ppos, le16_to_cpu(eh->eh_entries), le16_to_cpu(eh->eh_max));
+
+		ext4_ext_binsearch_idx(inode, path + ppos, block);
+		path[ppos].p_block = ext4_idx_pblock(path[ppos].p_idx);
+		path[ppos].p_depth = i;
+		path[ppos].p_ext = NULL;
+
+		bh = read_extent_tree_block(inode, path[ppos].p_idx, --i, flags);
+		if (IS_ERR(bh)) {
+			ret = PTR_ERR(bh);
+			goto err;
+		}
+
+		eh = ext_block_hdr(bh);
+		ppos++;
+		path[ppos].p_bh = bh;
+		path[ppos].p_hdr = eh;
+	}
+   ```
+
+   Ok, this is a typical B+ tree walking, the idea is to do binary search at each
+   node to find the right child to go, and then go to that node and loop again.
+
+   - `ext4_ext_binsearch_idx()`
+     This is just a simple binary search.
+
+   - `path[ppos].p_block = ext4_idx_pblock(path[ppos].p_idx);`
+     Just like struct ext4_extent, path[ppos].p_block points to the idx node.
+
+   - `bh = read_extent_tree_block(inode, path[ppos].p_idx, --i, flags);`
+     In the current node `path[ppos].p_bh` (for root,
+     it is inode of course), we've found the child node we should go is path[ppos].p_idx
+     **but the block of that node may not be in memory, if that's the case we have
+     to load it from disk first**, `read_extent_tree_block()` is for that.
+
+   - The left code
+     Now we get the buffer_head of next extent node, we should init path[++ppos], that
+     is what the left code does.
+
+###### `read_extent_tree_block(inode, idx, depth, flags)`
+
+It is a marco, which actually calls function `__read_extent_tree_block`, and the latter
+is the same as the former, just add two parameters `__func__` and `__LINE__` for debugging.
+
+```c
+static struct buffer_head *
+__read_extent_tree_block(const char *function, unsigned int line,
+			 struct inode *inode, struct ext4_extent_idx *idx,
+			 int depth, int flags)
+{
+	struct buffer_head		*bh;
+	int				err;
+	gfp_t				gfp_flags = __GFP_MOVABLE | GFP_NOFS;
+	ext4_fsblk_t			pblk;
+
+	if (flags & EXT4_EX_NOFAIL)
+		gfp_flags |= __GFP_NOFAIL;
+
+	pblk = ext4_idx_pblock(idx);
+	bh = sb_getblk_gfp(inode->i_sb, pblk, gfp_flags);
+	if (unlikely(!bh))
+		return ERR_PTR(-ENOMEM);
+
+	if (!bh_uptodate_or_lock(bh)) {
+		trace_ext4_ext_load_extent(inode, pblk, _RET_IP_);
+		err = ext4_read_bh(bh, 0, NULL);
+		if (err < 0)
+			goto errout;
+	}
+	if (buffer_verified(bh) && !(flags & EXT4_EX_FORCE_CACHE))
+		return bh;
+	err = __ext4_ext_check(function, line, inode, ext_block_hdr(bh),
+			       depth, pblk, le32_to_cpu(idx->ei_block));
+	if (err)
+		goto errout;
+	set_buffer_verified(bh);
+	/*
+	 * If this is a leaf block, cache all of its entries
+	 */
+	if (!(flags & EXT4_EX_NOCACHE) && depth == 0) {
+		struct ext4_extent_header *eh = ext_block_hdr(bh);
+		ext4_cache_extents(inode, eh);
+	}
+	return bh;
+errout:
+	put_bh(bh);
+	return ERR_PTR(err);
+
+}
+```
+
+ - `bh = sb_getblk_gfp(inode->i_sb, pblk, gfp_flags);`
+    Get the buffer_head associated with physical block pblk. The way is searching
+    the corresbonding blkdev file page cache. Once we get the page, we get all the
+    buffer_head associated with it by page->private.
+    If the page is not in page cache, we have to create it.
+    The detail is in another article, please refer to [buffer_head](./buffer_head.md)
