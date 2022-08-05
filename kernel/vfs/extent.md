@@ -236,8 +236,13 @@ The status is represented by     . Now let's look into each of them, this is rel
 with the initative of the es tree.
 
  - `WRITTEN`
+    **pages exists in page cache, ondisk blocks exists too.**
+
     this is the normal case, an es node is a cache version of the ondisk extent
+
  - `UNWRITTEN`
+    **pages exists in page cache, ondisk blocks exists but not filled (they contains junk data).**
+
     this is also cache version of an ondisk extent. The difference is the ondisk
     data blocks hasn't been touched yet. This is useful for syscall like fallocate().
     fallocate() allows you to allocate blocks to a file without filling zeroes.
@@ -245,19 +250,29 @@ with the initative of the es tree.
     a file of 4GB, you have to fill all the 4GB blocks to zeroes. With es tree,
     you can just set up metadata like the extent and extent status, and mark it as
     UNWRITTEN, and allocate data blocks in block map, no need to do any data IO.
+
  - `HOLE`
+    **no pages in page cache, and no ondisk blocks either.**
+
     stands for a hole in a file, in this case, the pblk is meaningless. The file
     logical range doesn't have it's physical range ondisk.
  - `DELAYED`
+    **pages exits in page cache, no ondisk blocks.**
+    **(This is why es tree is invented)**
+
     This is used by a feature called delay allocation. Normally, when a buffered
-    write request writes some data to the page cache and expands the file size,
-    it should allocate blocks ondisk immediately.
+    write request writes some data to the page cache and expands the file size or
+    fill a hole area, it should allocate blocks ondisk immediately.
     But actually we can delay the allocation to the writeback period, this will
     improve the latency. Think about the situation of no es tree: to distinguish
     HOLE and DELAYED extent, we have to look into the page cache to see if there
     are pages in the range. That makes things complicated and may cause bugs.
     (comments are welcome here: why it's complicated? I just get this from mail list)
     With this flag, we can do all these by just checking this flag.
+    The advantage of this feature is we can gether neighbor logical blocks and in
+    the writeback period we try to allocate contiguous physical blocks to get better
+    performance.
+
  - `REFERENCED`
     undiscovered. TOBEDONE.
 
