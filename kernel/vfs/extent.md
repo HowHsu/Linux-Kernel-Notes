@@ -405,7 +405,7 @@ One is the legacy mode----indirect mapping, the other one is the extent tree.
 And a flag EXT4_INODE_EXTENTS in inode controls which way to use.
 (So theoretically a filesystem can have two methods in use at the same time?)
 
-Ok, let's jump into the function.
+Ok, let's jump into the function. I'll list the main operation it does in order.
 
  - `path = ext4_find_extent(inode, map->m_lblk, NULL, 0);`
 	the first thing ext4_ext_map_blocks() does is searching the target extent
@@ -425,87 +425,13 @@ Ok, let's jump into the function.
 	the return value is an array `path[]`
 	`struct ext4_ext_path *path` records the path from root to leaf during
 	the walking. Meaning of members are clear, here I want to mention `struct buffer_head`.
-	It stands for a disk block, and is used to manage the block.
-	```c
-	struct buffer_head {
-		unsigned long b_state;		/* buffer state bitmap (see above) */
-		struct buffer_head *b_this_page;/* circular list of page's buffers */
-		struct page *b_page;		/* the page this bh is mapped to */
+	It stands for a disk block, and is used to manage the block. Here it points to
+	the corresponding block which is a extent node. Notice that this block is
+	in a page in the blkdev page cache.
+	The detail of buffer_head is complex, I've wrote another article for it.
+	[buffer_head](./buffer_head.md)
+	It's ok not to know the detail of buffer_head, you just need to know that
+	**page cache consists of pages, and those pages each contains one or more
+	blocks(if block size < page size). These blocks are caches of filesystem's
+	ondisk blocks.**
 
-		sector_t b_blocknr;		/* start block number */
-		size_t b_size;			/* size of mapping */
-		char *b_data;			/* pointer to data within the page */
-
-		struct block_device *b_bdev;
-		bh_end_io_t *b_end_io;		/* I/O completion */
-		void *b_private;		/* reserved for b_end_io */
-		struct list_head b_assoc_buffers; /* associated with another mapping */
-		struct address_space *b_assoc_map;	/* mapping this buffer is
-							   associated with */
-		atomic_t b_count;		/* users using this buffer_head */
-		spinlock_t b_uptodate_lock;	/* Used by the first bh in a page, to
-						 * serialise IO completion of other
-						 * buffers in the page */
-	};
-	```
-
-	Some one may ask why don't we just use struct page to manage a block. The reason
-	is that block size can be different with page size. I'm not sure but it seems
-	that usually block size <= page size. So suppose block size is 1024 Bytes and
-	page size is 4KB, then the relationship is like this:
-
-	```c
-	+-------------+
-	| struct page |
-        +-------------+              +--------------------+
-        |   private   |------------->| struct buffer_head |
-        |             |              +--------------------+
-        |   .......   |   +--------->|      b_this_page   |--+
-        +-------------+   |  +-------|      b_page        |  |
-               ^          |  |       |      b_blocknr     |  |
-               |          |  |       |      b_size        |  |
-	       |          |  |       |      b_data        |--|---------+
-	       |       +--+  |       |      b_bdev        |  |         |
-	       |       |     |       |      ......        |  |         |
-	       |       |     |       +--------------------+  |         |
-               |       |     |                               |         |                             +---the-disk--+
-               |       |     |       +--------------------+  |         |                             |             |
-               |       |     |       | struct buffer_head |  |         |                             |             |
-               |       |     |       +--------------------+  |         |                             +-------------+
-               |       |     |   +---|      b_this_page   |<-+         |                             |             |
-               +-------------+---|---|      b_page        |            |      +---the-page--+ +----->|             |
-                       |     |   |   |      b_blocknr     |            +----->|             |/       +-------------+
-                       |     |   |   |      b_size        |                   |             |  +---->|             |
-                       |     |   |   |      b_data        |------------+      +-------------+ /      |             |
-                       |     |   |   |      b_bdev        |            |      |             |/       +-------------+
-                       |     |   |   |      ......        |            +----->|             |  +---->|             |
-                       |     |   |   +--------------------+                   +-------------+ /      |             |
-                       |     |   |                                            |             |/       +-------------+
-                       |     |   |   +--------------------+           +------>|             |        |             |
-                       |     |   |   | struct buffer_head |           |       +-------------+  +---->|             |
-                       |     |   |   +--------------------+           |       |             | /      +-------------+
-                       |     |   +-->|      b_this_page   |--+        |   +-->|             |/       |             |
-                       |     +-------|      b_page        |  |        |   |   +-------------+        |             |
-                       |     |       |      b_blocknr     |  |        |   |                          +-------------+
-                       |     |       |      b_size        |  |        |   |                          |             |
-                       |     |       |      b_data        |--|--------+   |                          |             |
-                       |     |       |      b_bdev        |  |            |                          +-------------+
-                       |     |       |      ......        |  |            |                          |             |
-                       |     |       +--------------------+  |            |                          |             |
-                       |     |                               |            |                          +-------------+
-                       |     |       +--------------------+  |            |                          |             |
-                       |     |       | struct buffer_head |  |            |                          |             |
-                       |     |       +--------------------+  |            |                          +-------------+
-                       +-----|-------|      b_this_page   |<-+            |
-                             +-------|      b_page        |               |
-                                     |      b_blocknr     |               |
-                                     |      b_size        |               |
-                                     |      b_data        |---------------+
-                                     |      b_bdev        |
-                                     |      ......        |
-                                     +--------------------+
-
-	```
-
-	b_this_page, b_page, b_data are clearly explained in this picture. Here
-	notice b_this_page, it forms a circular list.
