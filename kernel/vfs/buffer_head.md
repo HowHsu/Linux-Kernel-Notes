@@ -116,7 +116,9 @@ notice b_this_page, it forms a circular list.
 ## extent search, miss and load
 
 Now let's dive into the code to feel how it works. Here I pick up the extent related
-code as an example.
+code as an example. Below is a function call graph so that you can have general impression.
+
+![](./imgaes/ext4_find_extent.png)
 
 In article [extent.md](./extent.md) we get to know `ext4_find_extent()` is used to
 find the extent for the target logical block number. When we walk through the B+ tree,
@@ -164,7 +166,7 @@ I've removed unrelated code. It basically calls two functions.
 In short, this function gets the buffer_head structure associated with the block
 pblk. The way is searching it in the corresponding blkdev file's page cache.
 
-Why do we have to look it up in blkdev file's page cache?
+**Why do we have to look it up in blkdev file's page cache?**
 Since that block is a extent node, it isn't file data, so it doesn't belong to
 any file else but the device file!
 
@@ -173,7 +175,21 @@ The trick here is that in blkdev file represents the whole device, that being sa
 the logical block number in the page cache is same as the physical block number
 on disk.
 
+`sb_getblk_gfp()` calls `__getblk_gfp()` to do the work, and it has two code pathes:
+ - `__find_get_block()`
+   This is the fast path, plain look up, no modification.
 
+   It also has two pathes.
+	 - `lookup_bh_lru()`
+	   The fast path, it tries to find the buffer_head from a percpu lru cache `bh_lrus`
+	 - `__find_get_block_slow()`
+	   The slow path, it looks up the blkdev file's page cache. If the page is not found
+	   or the buffer_head is unmapped, return NULL. (That being said, it doesn't create
+	   page in page cache and buffer_head in that page)
+	   If we find the buffer_head, it is then added to lru cache by `bh_lru_install()`
 
+ - `__getblk_slow()`
+   This is the slow path. It infinitely loops calling `__find_get_block()` and `grow_buffers`.
+   The latter creates the desired page and buffer_head if necessary.
 
-`err = ext4_read_bh(bh, 0, NULL);`
+#### `err = ext4_read_bh(bh, 0, NULL);`
