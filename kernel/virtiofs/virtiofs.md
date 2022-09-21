@@ -3,7 +3,7 @@
 ## 概述
 virtiofs 是由 radhat 提出的实现虚拟化环境下 guest 和 host 共享目录的框架。其总体架构如下：
 
-![virtiofs](./imges/virtiofs.jpeg)
+![virtiofs](./images/virtiofs.jpeg)
 
 使用 virtio 作为传输协议，使用 fuse 作为数据协议。也就是说，vring中的buffer数据是fuse协议的数据帧。
 
@@ -30,7 +30,7 @@ request 进入 vring 了之后qemu需要通知后端的 virtiofsd 进行处理�
 
 virtiofs DAX是非常重要的特性，可以使guest访问文件时绕过guest pagecahe，直接访问host的pagecache。
 
-![](./imges/virtiofs-dax-routine.svg)
+![](./images/virtiofs-dax-routine.svg)
 
 1. Host: register memory region
 
@@ -65,7 +65,7 @@ struct fuse_setupmapping_in {
 
 virtiofsd 会向 qemu 发送 vhost-user 协议中的 VHOST_USER_SLAVE_FS_MAP 消息，qemu 接收到该消息时，会执行 file mmap() 操作，将这个文件映射到之前 anonymous mmap() 分配的虚拟地址区间的相应偏移处。
 
-![](./imges/virtiofs-dax-address-3.jpg)
+![](./images/virtiofs-dax-address-3.jpg)
 
 需要注意的是，此时 host 上可能还没有为该 file mmap 分配对应的 page frame，即 HPA 地址空间中尚未分配对应的地址区间
 
@@ -93,9 +93,9 @@ guest# mount -t virtiofs myfs /mnt
 
 ## 性能
 
-![](./imges/virtiofs_psync.png)
-![](./imges/virtiofs_aio.png)
-![](./imges/virtiofs_2020.png)
+![](./images/virtiofs_psync.png)
+![](./images/virtiofs_aio.png)
+![](./images/virtiofs_2020.png)
 
 ## Reference
 
