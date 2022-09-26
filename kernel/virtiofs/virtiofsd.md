@@ -9,4 +9,4 @@ diving deeply into the code to make you have a full sense of it.
 Let's first look at a graph which shows the relationship of the main classes
  of virtiofsd.
 
-![](./images/virtiofsd-svg.svg)
+![](./images/virtiofsd.drawio.svg)
