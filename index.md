@@ -21,10 +21,19 @@ This blog is based on github pages, comments are welcome through github issues :
     * #### [extent](./kernel/vfs/extent.md)
     * #### [iomap](./kernel/vfs/iomap.md)
 * ### virtiofs
-    * ### [virtiofs](./kernel/virtiofs/virtiofs.md)
-    * ### [virtiofsd](./kernel/virtiofs/virtiofsd.md)
+    * #### [virtiofs](./kernel/virtiofs/virtiofs.md)
+    * #### [virtiofsd](./kernel/virtiofs/virtiofsd.md)
+* ###cloud-hypervisor 
+    * #### [vm create and boot](./kernel/cloud-hypervisor/vm_create_boot.md)
+    * #### [cpu initialization](./kernel/cloud-hypervisor/cpu.md)
+    * #### [mem initialization](./kernel/cloud-hypervisor/mem.md)
+    * #### [device initialization](./kernel/cloud-hypervisor/device.md)
+    * #### [fs initialization](./kernel/cloud-hypervisor/fs.md)
 * ### [fuse](./kernel/FUSE/fuse.md)
-* ### [virtio](./kernel/virtio/virtio.md)
+* ### virtio
+    * #### [virtio](./kernel/virtio/virtio.md)
+    * #### [vhost](./kernel/virtio/vhost.md)
+    * #### [vhost-user](./kernel/virtio/vhost-user.md)
 * ### [dax](./kernel/dax/dax.md)
 * ### vfio
     * #### [iommu](./kernel/vfio/iommu.md)
