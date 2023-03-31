@@ -20,6 +20,7 @@ This blog is based on github pages, comments are welcome through github issues :
     * #### [mount](./kernel/vfs/mount.md)
     * #### [extent](./kernel/vfs/extent.md)
     * #### [iomap](./kernel/vfs/iomap.md)
+    * #### [open](./kernel/vfs/open.md)
 * ### virtiofs
     * #### [virtiofs](./kernel/virtiofs/virtiofs.md)
     * #### [virtiofsd](./kernel/virtiofs/virtiofsd.md)
