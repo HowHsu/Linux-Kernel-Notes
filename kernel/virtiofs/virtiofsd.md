@@ -47,3 +47,200 @@ for guest page cache:
 for host page cache:
 `!O_DIRECT`: we use host page cache anyway!
 `O_DIRECT`: we use host page cache if `--allow-direct-io=false`
+
+### inode mapping
+
+Think about a problem, how does the frontend(guest kernel) read a file in the share directory
+of virtiofs?
+Let's first look into how a file is read on host.
+	- first you have to open it: fd = open(path, flags)
+	- then read it: read(fd, buf, offset, len)
+
+So the key is fd--file descriptor--which can  be seen as a index of process' open file array.
+But for read requests from a geust, things become complicated. Because the guest kernel cannnot
+don't have the fd information of the virtiofsd process.
+You may think about setting a mapping between guest kernel inode and virtiofsd fd in the guest kernel.
+That looks good, but I'm not sure if that works out 100%. But that's clear that it's more straightforward
+to create a map between guest kernel inode and host filesystem inode. In reality, virtiofs goes for this way.
+
+Let's jump into this topic by reading the code. Here we look at some filesystem operations
+
+#### lookup
+
+lookup is a directory inode operation. It is called in the syscall `open` process.
+And it is the slow code path of it. When we iterate to a path component, we first
+try to find its dentry in dcache, that's called the fast path. If that fails, we
+look into the ondisk filesystem to load the parent dir content by its inode, and
+find the dir entry in it, then build the dentry based on the found dir entry, this
+is the so-called slow path.
+Please refer to [open](../vfs/open.md) for more detail.
+
+For virtiofs, the `ondisk filesystem` is the host backend virtiofsd daemon. so
+virtiofsd must support this `LOOKUP` request.
+
+The virtiofs frontend(guest kernel) filesystem structure is below(virtiofs uses fuse filesystem as its filesystem part):
+```c
+static const struct inode_operations fuse_dir_inode_operations = {
+	.lookup		= fuse_lookup,
+	.mkdir		= fuse_mkdir,
+	.symlink	= fuse_symlink,
+	.unlink		= fuse_unlink,
+	.rmdir		= fuse_rmdir,
+	.rename		= fuse_rename2,
+	.link		= fuse_link,
+	.setattr	= fuse_setattr,
+	.create		= fuse_create,
+	.atomic_open	= fuse_atomic_open,
+	.tmpfile	= fuse_tmpfile,
+	.mknod		= fuse_mknod,
+	.permission	= fuse_permission,
+	.getattr	= fuse_getattr,
+	.listxattr	= fuse_listxattr,
+	.get_inode_acl	= fuse_get_inode_acl,
+	.get_acl	= fuse_get_acl,
+	.set_acl	= fuse_set_acl,
+	.fileattr_get	= fuse_fileattr_get,
+	.fileattr_set	= fuse_fileattr_set,
+};
+
+```
+
+```c
+static struct dentry *fuse_lookup(struct inode *dir, struct dentry *entry,
+				  unsigned int flags)
+{
+	int err;
+	struct fuse_entry_out outarg;
+	struct inode *inode;
+	struct dentry *newent;
+	bool outarg_valid = true;
+	bool locked;
+
+	if (fuse_is_bad(dir))
+		return ERR_PTR(-EIO);
+
+	locked = fuse_lock_inode(dir);
+	err = fuse_lookup_name(dir->i_sb, get_node_id(dir), &entry->d_name,
+			       &outarg, &inode);
+	fuse_unlock_inode(dir, locked);
+	if (err == -ENOENT) {
+		outarg_valid = false;
+		err = 0;
+	}
+	if (err)
+		goto out_err;
+
+	err = -EIO;
+	if (inode && get_node_id(inode) == FUSE_ROOT_ID)
+		goto out_iput;
+
+	newent = d_splice_alias(inode, entry);
+	err = PTR_ERR(newent);
+	if (IS_ERR(newent))
+		goto out_err;
+
+	entry = newent ? newent : entry;
+	if (outarg_valid)
+		fuse_change_entry_timeout(entry, &outarg);
+	else
+		fuse_invalidate_entry_cache(entry);
+
+	if (inode)
+		fuse_advise_use_readdirplus(dir);
+	return newent;
+
+ out_iput:
+	iput(inode);
+ out_err:
+	return ERR_PTR(err);
+}
+
+```
+
+- `fuse_lookup_name()`
+	Here we only care about `fuse_lookup_name()`, it search/create the target dentry (and its inode) by sending request to the baackend daemon.
+
+	```c
+		struct fuse_mount *fm = get_fuse_mount_super(sb);
+		struct fuse_forget_link *forget = fuse_alloc_forget();
+
+		fuse_lookup_init(fm->fc, &args, nodeid, name, outarg);
+
+		err = fuse_simple_request(fm, &args);
+
+		*inode = fuse_iget(sb, outarg->nodeid, outarg->generation, &outarg->attr, entry_attr_timeout(outarg), attr_version);
+
+		if (!*inode)
+			fuse_queue_forget(fm->fc, forget, outarg->nodeid, 1);
+	```
+
+	- `fuse_lookup_init(fm->fc, &args, nodeid, name, outarg)`
+
+		```c
+			static void fuse_lookup_init(struct fuse_conn *fc, struct fuse_args *args,
+						     u64 nodeid, const struct qstr *name,
+						     struct fuse_entry_out *outarg)
+			{
+				memset(outarg, 0, sizeof(struct fuse_entry_out));
+				args->opcode = FUSE_LOOKUP;
+				args->nodeid = nodeid;
+				args->in_numargs = 1;
+				args->in_args[0].size = name->len + 1;
+				args->in_args[0].value = name->name;
+				args->out_numargs = 1;
+				args->out_args[0].size = sizeof(struct fuse_entry_out);
+				args->out_args[0].value = outarg;
+			}
+
+		```
+
+		The code explain itself quite well, it initializes the arguments of
+		the the `LOOKUP` fuse reuqest. The key ones are `nodeid` and `in_args[0].value`,
+		which stands for the parent directory inode and the name string of the dir entry.
+
+	- `fuse_simple_request(fm, &args)`
+		This sends the reuqest.
+		- `fuse_request_alloc()`
+		- `__fuse_request_send(req)`
+			- `queue_request_and_unlock(fiq, req)`
+			- `request_wait_answer(req)`
+	- `fuse_iget()`
+		- `inode = iget5_locked(sb, nodeid, fuse_inode_eq, fuse_inode_set, void *data = &nodeid);`
+			This tries to find the inode from icache, and create a new one
+			if it doesn't exist.
+
+			- `fuse_inode_eq()`
+				Used to compare inode when searching icache.
+			- `fuse_inode_set(struct inode *inode, void *_nodeidp)`
+				Init the new created inode.
+				```c
+					static int fuse_inode_set(struct inode *inode, void *_nodeidp)
+					{
+						u64 nodeid = *(u64 *) _nodeidp;
+						get_fuse_inode(inode)->nodeid = nodeid;
+						return 0;
+					}
+				```
+
+				**Here we can see the mapping of inode number is stored in fuse_inode->nodeid, and it's
+				a simple linear relationship**
+			- `data`
+				The argument for fuse_inode_eq() and fuse_inode_set().
+		- `fuse_init_inode(inode, attr, fc);`
+		- `fuse_change_attributes(inode, attr, attr_valid, attr_version);`
+	- `fuse_queue_forget()`
+		This sends the `FUSE_FORGET` request to backend, it is used to decrease
+		the reference of or remove if the reference is 0 open(O_PATH)-ed inode
+		in `virtiofsd->inodes` because we somehow fails to open/create the
+		corresponding inode in the frontend(guest kernel).
+
+#### conclusion
+
+From the lookup code, we can see the inode mapping in virtiofs is straightforward, which
+is: when somehow we need to open a file on the backend at the first time(no matter the case
+is we want to access it or access files under it or some other cases), we open(O_PATH) it in
+backend and store it in `virtiofsd->inodes`, meanwhile we give it a inode number, the rule of
+given inode number is simply increment the number each time. At last we return this inode number
+to the frontend within the request reply packet. The frontend stores it in `fuse_inode->inodeid`.
+
+This mapping is quite important since the frontend requests backendfiles by this `inodeid`.
