@@ -244,3 +244,124 @@ given inode number is simply increment the number each time. At last we return t
 to the frontend within the request reply packet. The frontend stores it in `fuse_inode->inodeid`.
 
 This mapping is quite important since the frontend requests backendfiles by this `inodeid`.
+
+
+### kill_priv_v2
+
+This argument determines if we drop FSETID before doing `create`, `open`, `write`
+and `setattr`.
+For example, for `write`, if the frontend gives `WRITE_KILL_PRIV`, and `kill_priv` argument
+is given when booting virtiofsd, then we should do that. The triggerring model is similar
+for `create` and `open` and `setattr`.
+ - `write`
+	- `drop_effective_cap("FSETID")`
+		```c
+			fn drop_effective_cap(cap_name: &str) -> io::Result<Option<ScopedCaps>> {
+			    ScopedCaps::new(cap_name)
+			}
+		```
+		- `ScopedCaps::new(cap_name)`
+			```c
+			    fn new(cap_name: &str) -> io::Result<Option<Self>> {
+				use capng::{Action, CUpdate, Set, Type};
+
+				let cap = capng::name_to_capability(cap_name).map_err(|_| {
+				    let err = io::Error::last_os_error();
+				    error!(
+					"couldn't get the capability id for name {}: {:?}",
+					cap_name, err
+				    );
+				    err
+				})?;
+
+				if capng::have_capability(Type::EFFECTIVE, cap) {
+				    let req = vec![CUpdate {
+					action: Action::DROP,
+					cap_type: Type::EFFECTIVE,
+					capability: cap,
+				    }];
+				    capng::update(req).map_err(|e| {
+					error!("couldn't drop {} capability: {:?}", cap, e);
+					einval()
+				    })?;
+				    capng::apply(Set::CAPS).map_err(|e| {
+					error!(
+					    "couldn't apply capabilities after dropping {}: {:?}",
+					    cap, e
+					);
+					einval()
+				    })?;
+				    Ok(Some(Self { cap }))
+				} else {
+				    Ok(None)
+				}
+			    }
+
+			```
+
+			The key calls are `capng::update` and `capng::apply`, these two functions
+			in rust's capng lib finally call `capng_update` and `capng_apply` in
+			c lib `libcap-ng`, and it then calls syscall `capset` to **drop the current
+			thread's `CAP_FSETID` capability**.
+
+#### `CAP_FSETID`
+
+```
+    CAP_FSETID
+           * Don't clear set-user-ID and set-group-ID mode bits when a file is modified;
+           * set the set-group-ID bit for a file whose GID does not match the filesystem or  any  of  the
+             supplementary GIDs of the calling process.
+```
+
+According to the man page of `capabilities`, if `CAP_FSETID` is set, the thread doesn't clear
+set-user-ID and set-group-ID bits after modifying a file.
+Here set-user-ID and set-group-ID are also called `setuid` and `setgid`. This article explains
+these two bits quite clearly: [setuid/setgid](https://www.cbtnuggets.com/blog/technology/system-admin/linux-file-permissions-understanding-setuid-setgid-and-the-sticky-bit)
+
+In short:
+- setuid: a bit that makes an executable run with the privileges of the owner of the file
+
+- setgid: a bit that makes an executable run with the privileges of the group of the file
+
+- sticky bit: a bit set on directories that allows only the owner or root can delete files and subdirectories
+
+We can infer `setuid`/`setgid` are good for un-privilege users to run some programs which
+need high privileges. For example, `passwd` is for modifying a user's own password,
+it modifies `/etc/shadow` file which requests high root priority, but a normal user can succeed
+on this because `/bin/passwd` has `suid` bit set. So when a normal user runs `/bin/passwd`,
+it is run as root.
+
+Now you may know how the code logic goes if we write/change something to a "suid/sgid" file.
+Yes, the `suid`/`sgid` bits is cleared for security reason. Otherwise a malicious normal user
+can change a "suid/sgid" file to a malicious binary and run it with root privilege.
+So now it's very clear why virtiofsd clears `CAP_FSETID` before `write` operation, because
+this cap flag keeps `suid`/`sgid` bits after changing a file, it's not safe if we are change
+a executable file and the user changing it is a normal user.
+
+
+#### Review some useful knowledge
+
+- How to know if a file is set with `setuid`/`setgid` bit, or if a directory is set with
+`sticky` bit?
+Just `ls -l` a file, you can see something like `-rwxrwxrwx` for the file's permission.
+If `setuid` bit is set: `rwsrwxrwx`
+If `setgid` bit is set: `rwxrwsrwx`
+If `sticky` bit is set: `rwxrwxrwt`
+
+- What does the permission bits mean for a file
+
+There are three groups: `owner, group, other`. And for each object, there are three
+permissions: `read, write, execute`, aka, `r, w, x`.
+
+	- For a file:
+		- `r`: you can read the file
+		- `w`: you can write the file(not include deleting the file)
+		- `x`: you can execute the file
+
+	- For a directory:
+		- `r`: you can read the directory structure
+		- `w`: you can modify the directory structure(add/remove files)
+		- `x`: you can enter this directory
+
+**one thing to notice here is the permission to remove/delete a file is on its parent directory
+not itself**
