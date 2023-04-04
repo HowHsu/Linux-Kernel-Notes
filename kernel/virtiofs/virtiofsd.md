@@ -365,3 +365,402 @@ permissions: `read, write, execute`, aka, `r, w, x`.
 
 **one thing to notice here is the permission to remove/delete a file is on its parent directory
 not itself**
+
+### FsOptions
+
+`FsOptions` indicates features the filesystem supports. Notice, here it's an intersection
+of guest kernel fs and user input argument. Let's look into the `INIT` code
+to see where it comes from.
+
+```rust
+    fn init(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
+        let InitInCompat {
+            major,
+            minor,
+            max_readahead,
+            flags,
+        } = r.read_obj().map_err(Error::DecodeMessage)?;
+
+	// we can see the option value is from frontend.
+        let options = FsOptions::from_bits_truncate(flags as u64);
+
+	// there is flags2 if INIT_EXT member is in FsOption
+        let InitInExt { flags2, .. } = if options.contains(FsOptions::INIT_EXT) {
+            r.read_obj().map_err(Error::DecodeMessage)?
+        } else {
+            InitInExt::default()
+        };
+
+        // These fuse features are supported by this server by default.
+        let supported = FsOptions::ASYNC_READ
+            | FsOptions::PARALLEL_DIROPS
+            | FsOptions::BIG_WRITES
+            | FsOptions::AUTO_INVAL_DATA
+            | FsOptions::ASYNC_DIO
+            | FsOptions::HAS_IOCTL_DIR
+            | FsOptions::ATOMIC_O_TRUNC
+            | FsOptions::MAX_PAGES
+            | FsOptions::SUBMOUNTS
+            | FsOptions::INIT_EXT;
+
+	// merge flags and flags2 to flags_64 and transform it to FsOption
+        let flags_64 = ((flags2 as u64) << 32) | (flags as u64);
+        let capable = FsOptions::from_bits_truncate(flags_64);
+
+        match self.fs.init(capable) {
+            Ok(want) => {
+		/*
+		 * want: intersection of guest kernel supported and user want features.
+		 * supported: fuse default features
+		 * capable: guest kernel supported features.
+		 *
+		 * Here want is already what we want, doing an extra & is for safety in
+		 * future I guess.
+		 */
+                let enabled = (capable & (want | supported)).bits();
+                self.options.store(enabled, Ordering::Relaxed);
+
+                let out = InitOut {
+                    major: KERNEL_VERSION,
+                    minor: KERNEL_MINOR_VERSION,
+                    max_readahead,
+                    flags: enabled as u32,
+                    max_background: u16::MAX,
+                    congestion_threshold: (u16::MAX / 4) * 3,
+                    max_write: MAX_BUFFER_SIZE,
+                    time_gran: 1, // nanoseconds
+                    max_pages: max_pages.try_into().unwrap(),
+                    map_alignment: 0,
+                    flags2: (enabled >> 32) as u32,
+                    ..Default::default()
+                };
+
+                reply_ok(Some(out), None, in_header.unique, w)
+            }
+            Err(e) => reply_error(e, in_header.unique, w),
+        }
+    }
+
+```
+
+I've added some comments in above code, should be quite self-explained.
+Let's look into `self.fs.init()`
+
+```rust
+    fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
+	...
+	...
+	...
+
+        let mut opts = if self.cfg.readdirplus {
+            FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO
+        } else {
+            FsOptions::empty()
+        };
+        if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
+            opts |= FsOptions::WRITEBACK_CACHE;
+            self.writeback.store(true, Ordering::Relaxed);
+        }
+        if self.cfg.announce_submounts {
+            if capable.contains(FsOptions::SUBMOUNTS) {
+                self.announce_submounts.store(true, Ordering::Relaxed);
+            } else {
+                eprintln!("Warning: Cannot announce submounts, client does not support it");
+            }
+        }
+        if self.cfg.killpriv_v2 {
+            if capable.contains(FsOptions::HANDLE_KILLPRIV_V2) {
+                opts |= FsOptions::HANDLE_KILLPRIV_V2;
+            } else {
+                warn!("Cannot enable KILLPRIV_V2, client does not support it");
+            }
+        }
+        if self.cfg.posix_acl {
+            let acl_required_flags =
+                FsOptions::POSIX_ACL | FsOptions::DONT_MASK | FsOptions::SETXATTR_EXT;
+            if capable.contains(acl_required_flags) {
+                opts |= acl_required_flags;
+                self.posix_acl.store(true, Ordering::Relaxed);
+                debug!("init: enabling posix acl");
+            } else {
+                error!("Cannot enable posix ACLs, client does not support it");
+                return Err(io::Error::from_raw_os_error(libc::EPROTO));
+            }
+        }
+
+        if self.cfg.security_label {
+            if capable.contains(FsOptions::SECURITY_CTX) {
+                opts |= FsOptions::SECURITY_CTX;
+            } else {
+                error!("Cannot enable security label. kernel does not support FUSE_SECURITY_CTX capability");
+                return Err(io::Error::from_raw_os_error(libc::EPROTO));
+            }
+        }
+        Ok(opts)
+    }
+
+```
+
+**Here I'm confused why virtiofsd doesn't check if the host filesystem support those features**
+
+Let's have a look at all the options virtiofsd may support.
+
+```rust
+bitflags! {
+    /// A bitfield passed in as a parameter to and returned from the `init` method of the
+    /// `FileSystem` trait.
+    pub struct FsOptions: u64 {
+        /// Indicates that the filesystem supports asynchronous read requests.
+        ///
+        /// If this capability is not requested/available, the kernel will ensure that there is at
+        /// most one pending read request per file-handle at any time, and will attempt to order
+        /// read requests by increasing offset.
+        ///
+        /// This feature is enabled by default when supported by the kernel.
+        const ASYNC_READ = ASYNC_READ;
+
+        /// Indicates that the filesystem supports "remote" locking.
+        ///
+        /// This feature is not enabled by default and should only be set if the filesystem
+        /// implements the `getlk` and `setlk` methods of the `FileSystem` trait.
+        const POSIX_LOCKS = POSIX_LOCKS;
+
+        /// Kernel sends file handle for fstat, etc... (not yet supported).
+        const FILE_OPS = FILE_OPS;
+
+        /// Indicates that the filesystem supports the `O_TRUNC` open flag. If disabled, and an
+        /// application specifies `O_TRUNC`, fuse first calls `setattr` to truncate the file and
+        /// then calls `open` with `O_TRUNC` filtered out.
+        ///
+        /// This feature is enabled by default when supported by the kernel.
+        const ATOMIC_O_TRUNC = ATOMIC_O_TRUNC;
+
+        /// Indicates that the filesystem supports lookups of "." and "..".
+        ///
+        /// This feature is disabled by default.
+        const EXPORT_SUPPORT = EXPORT_SUPPORT;
+
+        /// FileSystem can handle write size larger than 4kB.
+        const BIG_WRITES = BIG_WRITES;
+
+        /// Indicates that the kernel should not apply the umask to the file mode on create
+        /// operations.
+        ///
+        /// This feature is disabled by default.
+        const DONT_MASK = DONT_MASK;
+
+        /// Indicates that the server should try to use `splice(2)` when writing to the fuse device.
+        /// This may improve performance.
+        ///
+        /// This feature is not currently supported.
+        const SPLICE_WRITE = SPLICE_WRITE;
+
+        /// Indicates that the server should try to move pages instead of copying when writing to /
+        /// reading from the fuse device. This may improve performance.
+        ///
+        /// This feature is not currently supported.
+        const SPLICE_MOVE = SPLICE_MOVE;
+
+        /// Indicates that the server should try to use `splice(2)` when reading from the fuse
+        /// device. This may improve performance.
+        ///
+        /// This feature is not currently supported.
+        const SPLICE_READ = SPLICE_READ;
+
+        /// If set, then calls to `flock` will be emulated using POSIX locks and must
+        /// then be handled by the filesystem's `setlock()` handler.
+        ///
+        /// If not set, `flock` calls will be handled by the FUSE kernel module internally (so any
+        /// access that does not go through the kernel cannot be taken into account).
+        ///
+        /// This feature is disabled by default.
+        const FLOCK_LOCKS = FLOCK_LOCKS;
+
+        /// Indicates that the filesystem supports ioctl's on directories.
+        ///
+        /// This feature is enabled by default when supported by the kernel.
+        const HAS_IOCTL_DIR = HAS_IOCTL_DIR;
+
+        /// Traditionally, while a file is open the FUSE kernel module only asks the filesystem for
+        /// an update of the file's attributes when a client attempts to read beyond EOF. This is
+        /// unsuitable for e.g. network filesystems, where the file contents may change without the
+        /// kernel knowing about it.
+        ///
+        /// If this flag is set, FUSE will check the validity of the attributes on every read. If
+        /// the attributes are no longer valid (i.e., if the *attribute* timeout has expired) then
+        /// FUSE will first send another `getattr` request. If the new mtime differs from the
+        /// previous value, any cached file *contents* will be invalidated as well.
+        ///
+        /// This flag should always be set when available. If all file changes go through the
+        /// kernel, *attribute* validity should be set to a very large number to avoid unnecessary
+        /// `getattr()` calls.
+        ///
+        /// This feature is enabled by default when supported by the kernel.
+        const AUTO_INVAL_DATA = AUTO_INVAL_DATA;
+
+        /// Indicates that the filesystem supports readdirplus.
+        ///
+        /// The feature is not enabled by default and should only be set if the filesystem
+        /// implements the `readdirplus` method of the `FileSystem` trait.
+        const DO_READDIRPLUS = DO_READDIRPLUS;
+
+        /// Indicates that the filesystem supports adaptive readdirplus.
+        ///
+        /// If `DO_READDIRPLUS` is not set, this flag has no effect.
+        ///
+        /// If `DO_READDIRPLUS` is set and this flag is not set, the kernel will always issue
+        /// `readdirplus()` requests to retrieve directory contents.
+        ///
+        /// If `DO_READDIRPLUS` is set and this flag is set, the kernel will issue both `readdir()`
+        /// and `readdirplus()` requests, depending on how much information is expected to be
+        /// required.
+        ///
+        /// This feature is not enabled by default and should only be set if the file system
+        /// implements both the `readdir` and `readdirplus` methods of the `FileSystem` trait.
+        const READDIRPLUS_AUTO = READDIRPLUS_AUTO;
+
+        /// Indicates that the filesystem supports asynchronous direct I/O submission.
+        ///
+        /// If this capability is not requested/available, the kernel will ensure that there is at
+        /// most one pending read and one pending write request per direct I/O file-handle at any
+        /// time.
+        ///
+        /// This feature is enabled by default when supported by the kernel.
+        const ASYNC_DIO = ASYNC_DIO;
+
+        /// Indicates that writeback caching should be enabled. This means that individual write
+        /// request may be buffered and merged in the kernel before they are sent to the file
+        /// system.
+        ///
+        /// This feature is disabled by default.
+        const WRITEBACK_CACHE = WRITEBACK_CACHE;
+
+        /// Indicates support for zero-message opens. If this flag is set in the `capable` parameter
+        /// of the `init` trait method, then the file system may return `ENOSYS` from the open() handler
+        /// to indicate success. Further attempts to open files will be handled in the kernel. (If
+        /// this flag is not set, returning ENOSYS will be treated as an error and signaled to the
+        /// caller).
+        ///
+        /// Setting (or not setting) the field in the `FsOptions` returned from the `init` method
+        /// has no effect.
+        const ZERO_MESSAGE_OPEN = NO_OPEN_SUPPORT;
+
+        /// Indicates support for parallel directory operations. If this flag is unset, the FUSE
+        /// kernel module will ensure that lookup() and readdir() requests are never issued
+        /// concurrently for the same directory.
+        ///
+        /// This feature is enabled by default when supported by the kernel.
+        const PARALLEL_DIROPS = PARALLEL_DIROPS;
+
+        /// Indicates that the file system is responsible for unsetting setuid and setgid bits when a
+        /// file is written, truncated, or its owner is changed.
+        ///
+        /// This feature is not currently supported.
+        const HANDLE_KILLPRIV = HANDLE_KILLPRIV;
+
+        /// Indicates support for POSIX ACLs.
+        ///
+        /// If this feature is enabled, the kernel will cache and have responsibility for enforcing
+        /// ACLs. ACL will be stored as xattrs and passed to userspace, which is responsible for
+        /// updating the ACLs in the filesystem, keeping the file mode in sync with the ACL, and
+        /// ensuring inheritance of default ACLs when new filesystem nodes are created. Note that
+        /// this requires that the file system is able to parse and interpret the xattr
+        /// representation of ACLs.
+        ///
+        /// Enabling this feature implicitly turns on the `default_permissions` mount option (even
+        /// if it was not passed to mount(2)).
+        ///
+        /// This feature is disabled by default.
+        const POSIX_ACL = POSIX_ACL;
+
+        /// Indicates that if the connection is gone because of sysfs abort, reading from the device
+        /// will return -ECONNABORTED.
+        ///
+        /// This feature is not currently supported.
+        const ABORT_ERROR = ABORT_ERROR;
+
+        /// Indicates support for negotiating the maximum number of pages supported.
+        ///
+        /// If this feature is enabled, we can tell the kernel the maximum number of pages that we
+        /// support to transfer in a single request.
+        ///
+        /// This feature is enabled by default if supported by the kernel.
+        const MAX_PAGES = MAX_PAGES;
+
+        /// Indicates that the kernel supports caching READLINK responses.
+        ///
+        /// This feature is not currently supported.
+        const CACHE_SYMLINKS = CACHE_SYMLINKS;
+
+        /// Indicates support for zero-message opens. If this flag is set in the `capable` parameter
+        /// of the `init` trait method, then the file system may return `ENOSYS` from the opendir() handler
+        /// to indicate success. Further attempts to open directories will be handled in the kernel. (If
+        /// this flag is not set, returning ENOSYS will be treated as an error and signaled to the
+        /// caller).
+        ///
+        /// Setting (or not setting) the field in the `FsOptions` returned from the `init` method
+        /// has no effect.
+        const ZERO_MESSAGE_OPENDIR = NO_OPENDIR_SUPPORT;
+
+        /// Indicates support for explicit data invalidation. If this feature is enabled, the
+        /// server is fully responsible for data cache invalidation, and the kernel won't
+        /// invalidate files data cache on size change and only truncate that cache to new size
+        /// in case the size decreased.
+        ///
+        /// This feature is not currently supported.
+        const EXPLICIT_INVAL_DATA = EXPLICIT_INVAL_DATA;
+
+        /// Indicates that the kernel supports the FUSE_ATTR_SUBMOUNT flag.
+        ///
+        /// Setting (or not setting) this flag in the `FsOptions` returned from the `init` method
+        /// has no effect.
+        const SUBMOUNTS = SUBMOUNTS;
+
+        /// Indicates that the filesystem is responsible for clearing
+        /// security.capability xattr and clearing setuid and setgid bits. Following
+        /// are the rules.
+        /// - clear "security.capability" on write, truncate and chown unconditionally
+        /// - clear suid/sgid if following is true. Note, sgid is cleared only if
+        ///   group executable bit is set.
+        ///    o setattr has FATTR_SIZE and FATTR_KILL_SUIDGID set.
+        ///    o setattr has FATTR_UID or FATTR_GID
+        ///    o open has O_TRUNC and FUSE_OPEN_KILL_SUIDGID
+        ///    o create has O_TRUNC and FUSE_OPEN_KILL_SUIDGID flag set.
+        ///    o write has FUSE_WRITE_KILL_SUIDGID
+        ///
+        /// This feature is enabled by default if supported by the kernel.
+        const HANDLE_KILLPRIV_V2 = HANDLE_KILLPRIV_V2;
+
+        /// Server supports extended struct SetxattrIn
+        const SETXATTR_EXT = SETXATTR_EXT;
+
+        /// Indicates that fuse_init_in structure has been extended and
+        /// expect extended struct coming in from kernel.
+        const INIT_EXT = INIT_EXT;
+
+        /// This bit is reserved. Don't use it.
+        const INIT_RESERVED = INIT_RESERVED;
+
+        /// Indicates that kernel is capable of sending a security
+        /// context at file creation time (create, mkdir, symlink
+        /// and mknod). This is expected to be a SELinux security
+        /// context as of now.
+        const SECURITY_CTX = SECURITY_CTX;
+
+        /// Indicates that kernel is capable of understanding
+        /// per inode dax flag sent in response to getattr
+        /// request. This will allow server to enable to
+        /// enable dax on selective files.
+         const HAS_INODE_DAX = HAS_INODE_DAX;
+    }
+}
+
+```
+
+I'll analyze these options one by one in the coming few days.
+
+#### `SECURITY_CTX`
+
+condition: cfg.security_label = true && guest kernel fs supports it
+
+ 
