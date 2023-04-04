@@ -763,4 +763,139 @@ I'll analyze these options one by one in the coming few days.
 
 condition: cfg.security_label = true && guest kernel fs supports it
 
- 
+Just like the comment says: the guest kernel sends a secuirty context at file
+creation time to backend, and it is stored as xattr in inode. It is SELinux
+security context as of now.
+Pick up `mkdir` for an example:
+	- guest kernel:
+
+		```c
+			fuse_mkdir()
+				create_new_entry()
+					get_create_ext()
+		```
+
+		```c
+			static int get_create_ext(struct fuse_args *args,
+						  struct inode *dir, struct dentry *dentry,
+						  umode_t mode)
+			{
+				struct fuse_conn *fc = get_fuse_conn_super(dentry->d_sb);
+				struct fuse_in_arg ext = { .size = 0, .value = NULL };
+				int err = 0;
+
+				if (fc->init_security)
+					err = get_security_context(dentry, mode, &ext);
+				if (!err && fc->create_supp_group)
+					err = get_create_supp_group(dir, &ext);
+
+				if (!err && ext.size) {
+					WARN_ON(args->in_numargs >= ARRAY_SIZE(args->in_args));
+					args->is_ext = true;
+					args->ext_idx = args->in_numargs++;
+					args->in_args[args->ext_idx] = ext;
+				} else {
+					kfree(ext.value);
+				}
+
+				return err;
+			}
+
+		```
+
+		`ext` here is the secctx we need, it will be sent to backend within the
+		`mkdir` request and finally be written to the host filesystem by `setxattr()`
+		`ext` is derived from `get_security_context()`, this function calls
+		`security_dentry_init_security()` in `security/security.c` to init the
+		content of secctx. I'm not familiar with SELinux part. Will suspend it for now.
+
+	- backend(virtiofsd)
+		Let's skip over the request decoding stage and just jump into the
+		passthroughfs logic.
+
+		```rust
+		    fn mkdir(
+			&self,
+			ctx: Context,
+			parent: Inode,
+			name: &CStr,
+			mode: u32,
+			umask: u32,
+			secctx: Option<SecContext>,
+		    ) -> io::Result<Entry> {
+
+			...
+			...
+
+			// Set security context on dir.
+			if let Some(secctx) = secctx {
+			    if let Err(e) = self.do_mknod_mkdir_symlink_secctx(&parent_file, name, &secctx) {
+				unsafe {
+				    libc::unlinkat(parent_file.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR);
+				};
+				return Err(e);
+			    }
+			}
+
+			self.do_lookup(parent, name)
+		    }
+
+		```
+
+		```rust
+		    fn do_mknod_mkdir_symlink_secctx(
+			&self,
+			parent_file: &InodeFile,
+			name: &CStr,
+			secctx: &SecContext,
+		    ) -> io::Result<()> {
+			// Remap security xattr name.
+			let xattr_name = self.map_client_xattrname(&secctx.name)?;
+
+			// Set security context on newly created node. It could be
+			// device node as well, so it is not safe to open the node
+			// and call fsetxattr(). Instead, use the fchdir(proc_fd)
+			// and call setxattr(o_path_fd). We use this trick while
+			// setting xattr as well.
+
+			// Open O_PATH fd for dir/symlink/special node just created.
+			let path_fd = self.open_relative_to(parent_file, name, libc::O_PATH, None)?;
+
+			let procname = CString::new(format!("{path_fd}"))
+			    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+
+			let procname = match procname {
+			    Ok(name) => name,
+			    Err(error) => {
+				return Err(error);
+			    }
+			};
+
+			let _working_dir_guard =
+			    set_working_directory(self.proc_self_fd.as_raw_fd(), self.root_fd.as_raw_fd());
+
+			let res = unsafe {
+			    libc::setxattr(
+				procname.as_ptr(),
+				xattr_name.as_ptr(),
+				secctx.secctx.as_ptr() as *const libc::c_void,
+				secctx.secctx.len(),
+				0,
+			    )
+			};
+
+			let res_err = io::Error::last_os_error();
+
+			if res == 0 {
+			    Ok(())
+			} else {
+			    Err(res_err)
+			}
+		    }
+		```
+
+		As you can see, virtiofsd finally calls `setxattr` to set the secctx
+		to file/inode in the host fs file.
+		**one thing to notice is before this, it first checks `xattrmap` and
+		do the rename/transforming for the xattr name.**
+
