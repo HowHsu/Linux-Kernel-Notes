@@ -323,23 +323,35 @@ In short:
 
 - setgid: a bit that makes an executable run with the privileges of the group of the file
 
-- sticky bit: a bit set on directories that allows only the owner or root can delete files and subdirectories
+- sticky bit: a bit set on directory that allows users can only delete/move/rename their own files/dirs in this directory.
 
-We can infer `setuid`/`setgid` are good for un-privilege users to run some programs which
+We can infer `setuid`/`setgid` are good for un-privilege users to modify some files which
 need high privileges. For example, `passwd` is for modifying a user's own password,
-it modifies `/etc/shadow` file which requests high root priority, but a normal user can succeed
-on this because `/bin/passwd` has `suid` bit set. So when a normal user runs `/bin/passwd`,
-it is run as root.
+it modifies `/etc/shadow` file which requires root priority, but a normal user can succeed
+on this by calling `/etc/passwd` because `/bin/passwd` has `suid` bit set. So when a normal user runs `/bin/passwd`, it is run as root.
 
 Now you may know how the code logic goes if we write/change something to a "suid/sgid" file.
 Yes, the `suid`/`sgid` bits is cleared for security reason. Otherwise a malicious normal user
-can change a "suid/sgid" file to a malicious binary and run it with root privilege.
+can possibly change a "suid/sgid" file to a malicious binary and run it with root privilege.
 So now it's very clear why virtiofsd clears `CAP_FSETID` before `write` operation, because
 this cap flag keeps `suid`/`sgid` bits after changing a file, it's not safe if we are change
 a executable file and the user changing it is a normal user.
 
 
 #### Review some useful knowledge
+
+- What is`uid` and `gid`
+Linux use `uid` and `gid` to recognize a user and a group, not the name of them.
+Ok, more basically knowledge: *In Linux, every process and every file has its owner and belonged group. the owner and group of a process is the owner and group of the process which executes it.*
+
+- Can you give a brief table of `suid`,`sgid` and `sticky` bit about their effect?
+
+```
+		binary file					directory
+SUID		the process' user = the file's user		no meaning
+SGID		the process' group = the file's group		all new files created by any user in this dir has the same group with the dir's.
+Sticky		no meaning					a user can only del/move/rename its own files/dirs in this dir(users' created dirs in this dir don't inherit the sticky bit)
+```
 
 - How to know if a file is set with `setuid`/`setgid` bit, or if a directory is set with
 `sticky` bit?
@@ -353,7 +365,7 @@ If `sticky` bit is set: `rwxrwxrwt`
 There are three groups: `owner, group, other`. And for each object, there are three
 permissions: `read, write, execute`, aka, `r, w, x`.
 
-	- For a file:
+	- For a file: 
 		- `r`: you can read the file
 		- `w`: you can write the file(not include deleting the file)
 		- `x`: you can execute the file
