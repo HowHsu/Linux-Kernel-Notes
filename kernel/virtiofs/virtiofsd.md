@@ -327,6 +327,12 @@ More detail about `SUID` and `SGID` is here: [SUID/SGID](../user_group_permissio
 ##### why drop_supplemental_groups()
 It's related with `SGID`: https://gitlab.com/virtio-fs/virtiofsd/-/merge_requests/77
 
+The example in the url link is:
+- a normal user userA runs virtiofsd, but it has a supplemental group which at least has `CAP_FSETID` capability.
+- a directory dirA whose group is root and has `SGID` bit, which means files created in it will has same group as A's
+- the guest creates a binary file fileA with `SGID` in dirA(because userA has supplemental group with `CAP_FSETID` capability)
+- now a normal user userA can execute a fileA with root group privilege. Because fileA has `SGID` and its group is root.
+
 ### FsOptions
 
 `FsOptions` indicates features the filesystem supports. Notice, here it's an intersection
