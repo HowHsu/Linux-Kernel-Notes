@@ -41,4 +41,4 @@ This blog is based on github pages, comments are welcome through github issues :
     * #### [sriov](./kernel/vfio/sriov.md)
 * ### io_uring
     * #### [uringlet](./kernel/io_uring/uringlet/uringlet.md)
-* ### [user_and_group](./kernel/user_group.md)
+* ### [user && group && permission](./kernel/user_group_permission.md)

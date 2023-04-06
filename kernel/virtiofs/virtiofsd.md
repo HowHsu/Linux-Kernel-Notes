@@ -314,69 +314,18 @@ for `create` and `open` and `setattr`.
 ```
 
 According to the man page of `capabilities`, if `CAP_FSETID` is set, the thread doesn't clear
-set-user-ID and set-group-ID bits after modifying a file.
-Here set-user-ID and set-group-ID are also called `setuid` and `setgid`. This article explains
-these two bits quite clearly: [setuid/setgid](https://www.cbtnuggets.com/blog/technology/system-admin/linux-file-permissions-understanding-setuid-setgid-and-the-sticky-bit)
+`set-user-ID` and `set-group-ID` bits after modifying a file.
 
-In short:
-- setuid: a bit that makes an executable run with the privileges of the owner of the file
-
-- setgid: a bit that makes an executable run with the privileges of the group of the file
-
-- sticky bit: a bit set on directory that allows users can only delete/move/rename their own files/dirs in this directory.
-
-We can infer `setuid`/`setgid` are good for un-privilege users to modify some files which
-need high privileges. For example, `passwd` is for modifying a user's own password,
-it modifies `/etc/shadow` file which requires root priority, but a normal user can succeed
-on this by calling `/etc/passwd` because `/bin/passwd` has `suid` bit set. So when a normal user runs `/bin/passwd`, it is run as root.
-
-Now you may know how the code logic goes if we write/change something to a "suid/sgid" file.
-Yes, the `suid`/`sgid` bits is cleared for security reason. Otherwise a malicious normal user
-can possibly change a "suid/sgid" file to a malicious binary and run it with root privilege.
+The logic without `CAP_FSETID` is: if we write/change something to a "SUID/SGID" file,
+the `SUID`/`SGID` bits are cleared for security reason. Otherwise a malicious normal user
+may possibly leverage a changed "suid/sgid" file to access high privilege resources.
 So now it's very clear why virtiofsd clears `CAP_FSETID` before `write` operation, because
 this cap flag keeps `suid`/`sgid` bits after changing a file, it's not safe if we are change
-a executable file and the user changing it is a normal user.
+a executable file.
+More detail about `SUID` and `SGID` is here: [SUID/SGID](../user_group_permission.md#3-suid-bit--sgid-bit--sticky-bit)
 
-
-#### Review some useful knowledge
-
-- What is`uid` and `gid`
-Linux use `uid` and `gid` to recognize a user and a group, not the name of them.
-Ok, more basically knowledge: *In Linux, every process and every file has its owner and belonged group. the owner and group of a process is the owner and group of the process which executes it.*
-
-- Can you give a brief table of `suid`,`sgid` and `sticky` bit about their effect?
-
-```
-		binary file					directory
-SUID		the process' user = the file's user		no meaning
-SGID		the process' group = the file's group		all new files created by any user in this dir has the same group with the dir's.
-Sticky		no meaning					a user can only del/move/rename its own files/dirs in this dir(users' created dirs in this dir don't inherit the sticky bit)
-```
-
-- How to know if a file is set with `setuid`/`setgid` bit, or if a directory is set with
-`sticky` bit?
-Just `ls -l` a file, you can see something like `-rwxrwxrwx` for the file's permission.
-If `setuid` bit is set: `rwsrwxrwx`
-If `setgid` bit is set: `rwxrwsrwx`
-If `sticky` bit is set: `rwxrwxrwt`
-
-- What does the permission bits mean for a file
-
-There are three groups: `owner, group, other`. And for each object, there are three
-permissions: `read, write, execute`, aka, `r, w, x`.
-
-	- For a file: 
-		- `r`: you can read the file
-		- `w`: you can write the file(not include deleting the file)
-		- `x`: you can execute the file
-
-	- For a directory:
-		- `r`: you can read the directory structure
-		- `w`: you can modify the directory structure(add/remove files)
-		- `x`: you can enter this directory
-
-**one thing to notice here is the permission to remove/delete a file is on its parent directory
-not itself**
+##### why drop_supplemental_groups()
+It's related with `SGID`: https://gitlab.com/virtio-fs/virtiofsd/-/merge_requests/77
 
 ### FsOptions
 
