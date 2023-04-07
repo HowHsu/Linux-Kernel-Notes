@@ -4,7 +4,7 @@ This article is about the backend of virtiofs: virtiofsd. And here I'll
 pick up the rust version as an instance, while I'm also new to this languagethough. I'm going to talk about the big picture of virtiofsd as well as
 diving deeply into the code to make you have a full sense of it.
 
-### framework
+## 1. framework
 
 Let's first look at a graph which shows the relationship of the main classes
  of virtiofsd.
@@ -13,7 +13,7 @@ Let's first look at a graph which shows the relationship of the main classes
 
 
 
-### cache policy
+## 2. cache policy
 
 - guest kernel page cache: GCache
 - host kern el page cache: HCache
@@ -37,7 +37,7 @@ vfs\fuse    FOPEN_DIRECT_IO(--cache=never)	      !FOPEN_DIRECT_IO(--cache=auto/a
 O_DIRECT        !GCache    HCache                     !GCache   HCache
 !O_DIRECT	!GCache    HCache                      GCache   HCache
 ```
-#### a more clear inclusion
+### a more clear inclusion
 
 for guest page cache:
 
@@ -48,13 +48,13 @@ for host page cache:
 `!O_DIRECT`: we use host page cache anyway!
 `O_DIRECT`: we use host page cache if `--allow-direct-io=false`
 
-### inode mapping
+## 3. inode mapping
 
 Think about a problem, how does the frontend(guest kernel) read a file in the share directory
 of virtiofs?
 Let's first look into how a file is read on host.
-	- first you have to open it: fd = open(path, flags)
-	- then read it: read(fd, buf, offset, len)
+- first you have to open it: fd = open(path, flags)
+- then read it: read(fd, buf, offset, len)
 
 So the key is fd--file descriptor--which can  be seen as a index of process' open file array.
 But for read requests from a geust, things become complicated. Because the guest kernel cannnot
@@ -65,7 +65,7 @@ to create a map between guest kernel inode and host filesystem inode. In reality
 
 Let's jump into this topic by reading the code. Here we look at some filesystem operations
 
-#### lookup
+### 3.1 lookup
 
 lookup is a directory inode operation. It is called in the syscall `open` process.
 And it is the slow code path of it. When we iterate to a path component, we first
@@ -175,7 +175,7 @@ static struct dentry *fuse_lookup(struct inode *dir, struct dentry *entry,
 	```
 
 	- `fuse_lookup_init(fm->fc, &args, nodeid, name, outarg)`
-
+    <br />
 		```c
 			static void fuse_lookup_init(struct fuse_conn *fc, struct fuse_args *args,
 						     u64 nodeid, const struct qstr *name,
@@ -234,7 +234,7 @@ static struct dentry *fuse_lookup(struct inode *dir, struct dentry *entry,
 		in `virtiofsd->inodes` because we somehow fails to open/create the
 		corresponding inode in the frontend(guest kernel).
 
-#### conclusion
+### 3.2 conclusion
 
 From the lookup code, we can see the inode mapping in virtiofs is straightforward, which
 is: when somehow we need to open a file on the backend at the first time(no matter the case
@@ -246,7 +246,7 @@ to the frontend within the request reply packet. The frontend stores it in `fuse
 This mapping is quite important since the frontend requests backendfiles by this `inodeid`.
 
 
-### kill_priv_v2
+## 4. kill_priv_v2
 
 This argument determines if we drop FSETID before doing `create`, `open`, `write`
 and `setattr`.
@@ -304,7 +304,7 @@ for `create` and `open` and `setattr`.
 			c lib `libcap-ng`, and it then calls syscall `capset` to **drop the current
 			thread's `CAP_FSETID` capability**.
 
-#### `CAP_FSETID`
+### 4.1 `CAP_FSETID`
 
 ```
     CAP_FSETID
@@ -324,7 +324,7 @@ this cap flag keeps `suid`/`sgid` bits after changing a file, it's not safe if w
 a executable file.
 More detail about `SUID` and `SGID` is here: [SUID/SGID](../user_group_permission.md#3-suid-bit--sgid-bit--sticky-bit)
 
-##### why drop_supplemental_groups()
+#### why drop_supplemental_groups()
 It's related with `SGID`: https://gitlab.com/virtio-fs/virtiofsd/-/merge_requests/77
 
 The example in the url link is:
@@ -333,7 +333,7 @@ The example in the url link is:
 - the guest creates a binary file fileA with `SGID` in dirA(because userA has supplemental group with `CAP_FSETID` capability)
 - now a normal user userA can execute a fileA with root group privilege. Because fileA has `SGID` and its group is root.
 
-### FsOptions
+## 5. FsOptions
 
 `FsOptions` indicates features the filesystem supports. Notice, here it's an intersection
 of guest kernel fs and user input argument. Let's look into the `INIT` code
@@ -348,10 +348,10 @@ to see where it comes from.
             flags,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
 
-	// we can see the option value is from frontend.
+	    // we can see the option value is from frontend.
         let options = FsOptions::from_bits_truncate(flags as u64);
 
-	// there is flags2 if INIT_EXT member is in FsOption
+	    // there is flags2 if INIT_EXT member is in FsOption
         let InitInExt { flags2, .. } = if options.contains(FsOptions::INIT_EXT) {
             r.read_obj().map_err(Error::DecodeMessage)?
         } else {
@@ -370,20 +370,20 @@ to see where it comes from.
             | FsOptions::SUBMOUNTS
             | FsOptions::INIT_EXT;
 
-	// merge flags and flags2 to flags_64 and transform it to FsOption
+	    // merge flags and flags2 to flags_64 and transform it to FsOption
         let flags_64 = ((flags2 as u64) << 32) | (flags as u64);
         let capable = FsOptions::from_bits_truncate(flags_64);
 
         match self.fs.init(capable) {
             Ok(want) => {
-		/*
-		 * want: intersection of guest kernel supported and user want features.
-		 * supported: fuse default features
-		 * capable: guest kernel supported features.
-		 *
-		 * Here want is already what we want, doing an extra & is for safety in
-		 * future I guess.
-		 */
+                /*
+                * want: intersection of guest kernel supported and user want features.
+                * supported: fuse default features
+                * capable: guest kernel supported features.
+                *
+                * Here want is already what we want, doing an extra & is for safety in
+                * future I guess.
+                */
                 let enabled = (capable & (want | supported)).bits();
                 self.options.store(enabled, Ordering::Relaxed);
 
@@ -726,7 +726,7 @@ bitflags! {
 
 I'll analyze these options one by one in the coming few days.
 
-#### `SECURITY_CTX`
+### 5.1 `SECURITY_CTX`
 
 condition: cfg.security_label = true && guest kernel fs supports it
 
@@ -734,135 +734,135 @@ Just like the comment says: the guest kernel sends a secuirty context at file
 creation time to backend, and it is stored as xattr in inode. It is SELinux
 security context as of now.
 Pick up `mkdir` for an example:
-	- guest kernel:
+- guest kernel:
 
-		```c
-			fuse_mkdir()
-				create_new_entry()
-					get_create_ext()
-		```
+    ```c
+        fuse_mkdir()
+            create_new_entry()
+                get_create_ext()
+    ```
 
-		```c
-			static int get_create_ext(struct fuse_args *args,
-						  struct inode *dir, struct dentry *dentry,
-						  umode_t mode)
-			{
-				struct fuse_conn *fc = get_fuse_conn_super(dentry->d_sb);
-				struct fuse_in_arg ext = { .size = 0, .value = NULL };
-				int err = 0;
+    ```c
+        static int get_create_ext(struct fuse_args *args,
+                        struct inode *dir, struct dentry *dentry,
+                        umode_t mode)
+        {
+            struct fuse_conn *fc = get_fuse_conn_super(dentry->d_sb);
+            struct fuse_in_arg ext = { .size = 0, .value = NULL };
+            int err = 0;
 
-				if (fc->init_security)
-					err = get_security_context(dentry, mode, &ext);
-				if (!err && fc->create_supp_group)
-					err = get_create_supp_group(dir, &ext);
+            if (fc->init_security)
+                err = get_security_context(dentry, mode, &ext);
+            if (!err && fc->create_supp_group)
+                err = get_create_supp_group(dir, &ext);
 
-				if (!err && ext.size) {
-					WARN_ON(args->in_numargs >= ARRAY_SIZE(args->in_args));
-					args->is_ext = true;
-					args->ext_idx = args->in_numargs++;
-					args->in_args[args->ext_idx] = ext;
-				} else {
-					kfree(ext.value);
-				}
+            if (!err && ext.size) {
+                WARN_ON(args->in_numargs >= ARRAY_SIZE(args->in_args));
+                args->is_ext = true;
+                args->ext_idx = args->in_numargs++;
+                args->in_args[args->ext_idx] = ext;
+            } else {
+                kfree(ext.value);
+            }
 
-				return err;
-			}
+            return err;
+        }
 
-		```
+    ```
 
-		`ext` here is the secctx we need, it will be sent to backend within the
-		`mkdir` request and finally be written to the host filesystem by `setxattr()`
-		`ext` is derived from `get_security_context()`, this function calls
-		`security_dentry_init_security()` in `security/security.c` to init the
-		content of secctx. I'm not familiar with SELinux part. Will suspend it for now.
+    `ext` here is the secctx we need, it will be sent to backend within the
+    `mkdir` request and finally be written to the host filesystem by `setxattr()`
+    `ext` is derived from `get_security_context()`, this function calls
+    `security_dentry_init_security()` in `security/security.c` to init the
+    content of secctx. I'm not familiar with SELinux part. Will suspend it for now.
 
-	- backend(virtiofsd)
-		Let's skip over the request decoding stage and just jump into the
-		passthroughfs logic.
+- backend(virtiofsd)
+    Let's skip over the request decoding stage and just jump into the
+    passthroughfs logic.
 
-		```rust
-		    fn mkdir(
-			&self,
-			ctx: Context,
-			parent: Inode,
-			name: &CStr,
-			mode: u32,
-			umask: u32,
-			secctx: Option<SecContext>,
-		    ) -> io::Result<Entry> {
+    ```rust
+        fn mkdir(
+        &self,
+        ctx: Context,
+        parent: Inode,
+        name: &CStr,
+        mode: u32,
+        umask: u32,
+        secctx: Option<SecContext>,
+        ) -> io::Result<Entry> {
 
-			...
-			...
+        ...
+        ...
 
-			// Set security context on dir.
-			if let Some(secctx) = secctx {
-			    if let Err(e) = self.do_mknod_mkdir_symlink_secctx(&parent_file, name, &secctx) {
-				unsafe {
-				    libc::unlinkat(parent_file.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR);
-				};
-				return Err(e);
-			    }
-			}
+        // Set security context on dir.
+        if let Some(secctx) = secctx {
+            if let Err(e) = self.do_mknod_mkdir_symlink_secctx(&parent_file, name, &secctx) {
+            unsafe {
+                libc::unlinkat(parent_file.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR);
+            };
+            return Err(e);
+            }
+        }
 
-			self.do_lookup(parent, name)
-		    }
+        self.do_lookup(parent, name)
+        }
 
-		```
+    ```
 
-		```rust
-		    fn do_mknod_mkdir_symlink_secctx(
-			&self,
-			parent_file: &InodeFile,
-			name: &CStr,
-			secctx: &SecContext,
-		    ) -> io::Result<()> {
-			// Remap security xattr name.
-			let xattr_name = self.map_client_xattrname(&secctx.name)?;
+    ```rust
+        fn do_mknod_mkdir_symlink_secctx(
+        &self,
+        parent_file: &InodeFile,
+        name: &CStr,
+        secctx: &SecContext,
+        ) -> io::Result<()> {
+        // Remap security xattr name.
+        let xattr_name = self.map_client_xattrname(&secctx.name)?;
 
-			// Set security context on newly created node. It could be
-			// device node as well, so it is not safe to open the node
-			// and call fsetxattr(). Instead, use the fchdir(proc_fd)
-			// and call setxattr(o_path_fd). We use this trick while
-			// setting xattr as well.
+        // Set security context on newly created node. It could be
+        // device node as well, so it is not safe to open the node
+        // and call fsetxattr(). Instead, use the fchdir(proc_fd)
+        // and call setxattr(o_path_fd). We use this trick while
+        // setting xattr as well.
 
-			// Open O_PATH fd for dir/symlink/special node just created.
-			let path_fd = self.open_relative_to(parent_file, name, libc::O_PATH, None)?;
+        // Open O_PATH fd for dir/symlink/special node just created.
+        let path_fd = self.open_relative_to(parent_file, name, libc::O_PATH, None)?;
 
-			let procname = CString::new(format!("{path_fd}"))
-			    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+        let procname = CString::new(format!("{path_fd}"))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
 
-			let procname = match procname {
-			    Ok(name) => name,
-			    Err(error) => {
-				return Err(error);
-			    }
-			};
+        let procname = match procname {
+            Ok(name) => name,
+            Err(error) => {
+            return Err(error);
+            }
+        };
 
-			let _working_dir_guard =
-			    set_working_directory(self.proc_self_fd.as_raw_fd(), self.root_fd.as_raw_fd());
+        let _working_dir_guard =
+            set_working_directory(self.proc_self_fd.as_raw_fd(), self.root_fd.as_raw_fd());
 
-			let res = unsafe {
-			    libc::setxattr(
-				procname.as_ptr(),
-				xattr_name.as_ptr(),
-				secctx.secctx.as_ptr() as *const libc::c_void,
-				secctx.secctx.len(),
-				0,
-			    )
-			};
+        let res = unsafe {
+            libc::setxattr(
+            procname.as_ptr(),
+            xattr_name.as_ptr(),
+            secctx.secctx.as_ptr() as *const libc::c_void,
+            secctx.secctx.len(),
+            0,
+            )
+        };
 
-			let res_err = io::Error::last_os_error();
+        let res_err = io::Error::last_os_error();
 
-			if res == 0 {
-			    Ok(())
-			} else {
-			    Err(res_err)
-			}
-		    }
-		```
+        if res == 0 {
+            Ok(())
+        } else {
+            Err(res_err)
+        }
+        }
+    ```
 
-		As you can see, virtiofsd finally calls `setxattr` to set the secctx
-		to file/inode in the host fs file.
-		**one thing to notice is before this, it first checks `xattrmap` and
-		do the rename/transforming for the xattr name.**
+    As you can see, virtiofsd finally calls `setxattr` to set the secctx
+    to file/inode in the host fs file.
+    **one thing to notice is before this, it first checks `xattrmap` and
+    do the rename/transforming for the xattr name.**
 
