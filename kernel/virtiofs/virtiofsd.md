@@ -866,3 +866,57 @@ Pick up `mkdir` for an example:
     **one thing to notice is before this, it first checks `xattrmap` and
     do the rename/transforming for the xattr name.**
 
+## 6. user/group mapping
+
+### 6.1 uid/gid of files in shared_dir
+This topic is about user and group a file created in virtiofsd's shared_dir belongs to.
+
+- think about one problem: a user in guest creates a file in the shared_dir, there is/isn't a same(uid) user on the host, what does this file belong to when you do `ls -l /path/to/file` on host?
+
+To answer this question, we have to figure out how virtiofsd works when creating a file.
+Say virtiofsd is run by root, `user=user1, group=group1` in guest creates a new file in shared_dir, what does virtiofsd do after it receive this request from guest? just create the file?
+No, we surely cannot do that directly, since then the user
+and group of that created file will be root and root, while it should be user1 and group1.
+So virtiofsd has to switch its UID and GID before doing
+the create file stuff. A simple function call process in
+virtiofsd is like this:
+
+```rust
+server.create()
+    self.fs.create()
+        self.do_create()
+            set_creds(ctx.uid, ctx.gid)?;
+                SYS_setresgid;
+                SYS_setresuid;
+            self.open_relative_to();
+            set_creds(0, 0)
+```
+
+Here `ctx` is from the guest request. `ctx.uid` and `ctx.gid` are the `uid` and `gid` of the task who triggers this mission in guest userspace.
+So it clearly shows what happens in virtiofsd:
+- 1.switch eUID to `ctx.uid` and eGID to `ctx.gid`
+- 2.call create syscall
+- 3.switch eUID and eGID back.
+
+**Notice, the step 3 isn't done by `set_cred(0, 0)`, it is
+done by Drop() of `ScopedUid` and `ScopedGid`, which happens automatically when the function ends.**
+
+- another quesion: `uid=1000, name=Alice` in guest create a file, and there is `uid=1000, name=Bob` on host.
+What shows when you type `ls -l` on host?
+
+**It's Bob not Alice, because Linux store the UID in inode not the user name. And when `ls` goes, UID=1000 maps 'Bob' on host, so it outputs 'Bob'**
+**Notice, if the UID doesn't exist on host, `ls -l` shows the UID directly**
+
+```c
+struct inode {                                                                   
+        umode_t                 i_mode;                                          
+        unsigned short          i_opflags;                                       
+        kuid_t                  i_uid;                                           
+        kgid_t                  i_gid;                                           
+        unsigned int            i_flags;                                         
+        ...
+        ...
+        ...
+}
+
+```
