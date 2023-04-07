@@ -920,3 +920,103 @@ struct inode {
 }
 
 ```
+
+## 7. announce_submounts
+
+Virtiofsd can only share one directory to the guest, but there can be multiple filesystems in the `shared_dir`. What if two files in two filesystems have same inode number and the guest don't know they are in different filesystems? That may cause issues.
+The `announce_submounts` argument is to resolve this. It
+tells the guest that a directory in `shared_dir` is a mount point. It is currently turn on by default.(after commit bd5fe483ee482)
+It works only in `lookup` because that's the place we first touch a file.
+
+```rust
+    fn do_lookup(&self, parent: Inode, name: &CStr) -> io::Result<Entry> {
+         let p = self
+            .inodes
+            .read()
+            .unwrap()
+            .get(&parent)
+            .map(Arc::clone)
+            .ok_or_else(ebadf)?;
+
+        let p_file = p.get_file()?;
+
+        let path_fd = {
+            let fd = self.open_relative_to(&p_file, name, libc::O_PATH, None)?;
+            // Safe because we just opened this fd.
+            unsafe { File::from_raw_fd(fd) }
+        };
+
+        let st = statx(&path_fd, None)?;
+
+        let mut attr_flags: u32 = 0;
+
+        if st.st.st_mode & libc::S_IFMT == libc::S_IFDIR
+            && self.announce_submounts.load(Ordering::Relaxed)
+            && (st.st.st_dev != p.ids.dev || st.mnt_id != p.ids.mnt_id)
+        {
+            attr_flags |= fuse::ATTR_SUBMOUNT;
+        }
+
+	...
+	...
+	...
+
+        Ok(Entry {
+            inode,
+            generation: 0,
+            attr: st.st,
+            attr_flags,
+            attr_timeout: self.cfg.attr_timeout,
+            entry_timeout: self.cfg.entry_timeout,
+        })
+    }
+
+
+```
+
+I've delete unrelated code above. From the code you can see the steps are:
+- open the requested file with `O_PATH`
+- get the state of the file by statx()
+- if the file **is a dir** and **announce_submounts is on** and **its mnt id !=parent's mnt id**, mark `fuse::ATTR_SUBMOUNT` on `attr_flags`
+- `attr_flags` is sent back to the guest kernel
+
+Let's turn to the guest kernel side:
+`fuse_lookup() --> fuse_lookup_name() --> fuse_iget()`
+
+```c
+struct inode *fuse_iget(struct super_block *sb, u64 nodeid,
+ 			int generation, struct fuse_attr *attr,
+			u64 attr_valid, u64 attr_version)
+{
+	struct inode *inode;
+	struct fuse_inode *fi;
+	struct fuse_conn *fc = get_fuse_conn_super(sb);
+
+	/*
+	 * Auto mount points get their node id from the submount root, which is
+	 * not a unique identifier within this filesystem.
+	 *
+	 * To avoid conflicts, do not place submount points into the inode hash
+	 * table.
+	 */
+	if (fc->auto_submounts && (attr->flags & FUSE_ATTR_SUBMOUNT) &&
+	    S_ISDIR(attr->mode)) {
+		inode = new_inode(sb);
+		if (!inode)
+			return NULL;
+
+		fuse_init_inode(inode, attr, fc);
+		get_fuse_inode(inode)->nodeid = nodeid;
+		inode->i_flags |= S_AUTOMOUNT;
+ 		goto done;
+ 	}
+	...
+	...
+	...
+}
+
+```
+
+`fc->auto_submounts` is always true for virtiofs, `FUSE_ATTR_SUBMOUNT` is same as
+`fuse::ATTR_SUBMOUNT`.
+
