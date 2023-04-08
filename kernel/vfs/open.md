@@ -273,3 +273,235 @@ refer to the man page.
 				**[TODO]**
 			- fd_install(fd, f)
 				Install the file to file descriptor table of the process.
+
+## mount points
+
+How does Linux vfs handle mount points? In the previous section, we have a big picture of function calls of `open`,
+but there is one thing left, each time we walk to a component, we can `step_into()` to update the `nd` state. But
+the first thing in `step_into()` is actually `handle_mounts()`, because if the current dentry is a mount point, we
+have to step to the root dentry of that mounted filesystem before updating the `nd` stuff.
+
+```c
+static const char *step_into(struct nameidata *nd, int flags,
+		     struct dentry *dentry)
+{
+	struct path path;
+	struct inode *inode;
+	int err = handle_mounts(nd, dentry, &path);
+
+	...
+	...
+}
+
+```
+
+We first declare a `struct path` as the return info of `handle_mounts()`.
+
+```c
+static inline int handle_mounts(struct nameidata *nd, struct dentry *dentry,
+			  struct path *path)
+{
+	bool jumped;
+	int ret;
+
+	path->mnt = nd->path.mnt;
+	path->dentry = dentry;
+	if (nd->flags & LOOKUP_RCU) {
+		unsigned int seq = nd->next_seq;
+		if (likely(__follow_mount_rcu(nd, path)))
+			return 0;
+		// *path and nd->next_seq might've been clobbered
+		path->mnt = nd->path.mnt;
+		path->dentry = dentry;
+		nd->next_seq = seq;
+		if (!try_to_unlazy_next(nd, dentry))
+			return -ECHILD;
+	}
+	ret = traverse_mounts(path, &jumped, &nd->total_link_count, nd->flags);
+	if (jumped) {
+		if (unlikely(nd->flags & LOOKUP_NO_XDEV))
+			ret = -EXDEV;
+		else
+			nd->state |= ND_JUMPED;
+	}
+	if (unlikely(ret)) {
+		dput(path->dentry);
+		if (path->mnt != nd->path.mnt)
+			mntput(path->mnt);
+	}
+	return ret;
+}
+
+```
+
+### `handle_mounts()` does this:
+
+- update `path->mnt` and `path->dentry` to the current `nd->path.mnt` and `dentry`
+- do rcu mount point lookup if we are in rcu lookup stage.
+- normal ref lookup with `traverse_mounts()`
+
+#### Let's look into the rcu lookup:
+
+```c
+static bool __follow_mount_rcu(struct nameidata *nd, struct path *path)
+{
+	struct dentry *dentry = path->dentry;
+	unsigned int flags = dentry->d_flags;
+
+	if (likely(!(flags & DCACHE_MANAGED_DENTRY)))
+		return true;
+
+	if (unlikely(nd->flags & LOOKUP_NO_XDEV))
+		return false;
+
+	for (;;) {
+		/*
+		 * Don't forget we might have a non-mountpoint managed dentry
+		 * that wants to block transit.
+		 */
+		if (unlikely(flags & DCACHE_MANAGE_TRANSIT)) {
+			int res = dentry->d_op->d_manage(path, true);
+			if (res)
+				return res == -EISDIR;
+			flags = dentry->d_flags;
+		}
+
+		if (flags & DCACHE_MOUNTED) {
+			struct mount *mounted = __lookup_mnt(path->mnt, dentry);
+			if (mounted) {
+				path->mnt = &mounted->mnt;
+				dentry = path->dentry = mounted->mnt.mnt_root;
+				nd->state |= ND_JUMPED;
+				nd->next_seq = read_seqcount_begin(&dentry->d_seq);
+				flags = dentry->d_flags;
+				// makes sure that non-RCU pathwalk could reach
+				// this state.
+				if (read_seqretry(&mount_lock, nd->m_seq))
+					return false;
+				continue;
+			}
+			if (read_seqretry(&mount_lock, nd->m_seq))
+				return false;
+		}
+		return !(flags & DCACHE_NEED_AUTOMOUNT);
+	}
+}
+```
+
+ - 1. First if it's an normal dentry (not `DCACHE_MANAGED_DENTRY` one), just return true to
+tell the caller we have done the work.
+
+```c
+#define DCACHE_MANAGED_DENTRY \
+	(DCACHE_MOUNTED|DCACHE_NEED_AUTOMOUNT|DCACHE_MANAGE_TRANSIT)
+
+```
+
+- 2. Then if it's a mount point (`DCACHE_MOUNTED`), call `struct mount *mounted = __lookup_mnt(path->mnt, dentry);`
+to look up the `struct mount. (Let's ignore the `DCACHE_MANAGE_TRANSIT` for now)
+
+```c
+/*
+ * find the first mount at @dentry on vfsmount @mnt.
+ * call under rcu_read_lock()
+ */
+struct mount *__lookup_mnt(struct vfsmount *mnt, struct dentry *dentry)
+{
+	struct hlist_head *head = m_hash(mnt, dentry);
+	struct mount *p;
+
+	hlist_for_each_entry_rcu(p, head, mnt_hash)
+		if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
+			return p;
+	return NULL;
+}
+
+```
+
+The lookup is clear, we use **the parent mnt** and **the mounted dentry** as parameters to
+get a hash value to locate the index in the global`MountCache` and then find the
+target `mount` in the collision list.
+
+```c
+static inline struct hlist_head *m_hash(struct vfsmount *mnt, struct dentry *dentry)
+{
+	unsigned long tmp = ((unsigned long)mnt / L1_CACHE_BYTES);
+	tmp += ((unsigned long)dentry / L1_CACHE_BYTES);
+	tmp = tmp + (tmp >> m_hash_shift);
+	return &mount_hashtable[tmp & m_hash_mask];
+}
+```
+
+- 3. the return value of `__lookup_mnt()` is the found `struct mount`. And we use it
+to update the `path->mnt` and `path->dentry`, **now the `path->dentry` is the root dentry
+of the found filesystem**.
+Are we done? No, as you can see, there is a infinite loop to do this mount lookup,
+because the found dentry can also be a mount point, we have to iterate on it.
+
+**The above case happens when you mount multiple fs to same path**
+for example:
+
+```bash
+mount /dev/sda /mnt/test
+mount /dev/sdb /mnt/test
+```
+
+This way the finally found dentry is the root dentry of fs on sdb, because the mount
+relationship will be like this:
+(Here I borrow a picture from web)
+
+![mount_points](./images/mount_points.jpg)
+
+
+
+#### `traverse_mounts()`
+`__follow_mount_rcu()` doesn't handle `automount` dentry. It is left to `traverse_mounts`
+
+The first half code of it is similar with `__follow_mount_rcu()`, the different part
+is it handles `DCACHE_NEED_AUTOMOUNT` case (recursively I think).
+
+```c
+static int __traverse_mounts(struct path *path, unsigned flags, bool *jumped,
+			     int *count, unsigned lookup_flags)
+{
+	struct vfsmount *mnt = path->mnt;
+	bool need_mntput = false;
+	int ret = 0;
+
+	while (flags & DCACHE_MANAGED_DENTRY) {
+		...
+		...
+		...
+
+		if (flags & DCACHE_MOUNTED) {	// something's mounted on it..
+			struct vfsmount *mounted = lookup_mnt(path);
+			if (mounted) {		// ... in our namespace
+				...
+				...
+				...
+				need_mntput = true;
+				continue;
+			}
+		}
+
+		if (!(flags & DCACHE_NEED_AUTOMOUNT))
+			break;
+
+		// uncovered automount point
+		ret = follow_automount(path, count, lookup_flags);
+		flags = smp_load_acquire(&path->dentry->d_flags);
+		if (ret < 0)
+			break;
+	}
+
+	...
+	...
+	...
+
+	*jumped = need_mntput;
+	return ret;
+}
+
+```
+
+
