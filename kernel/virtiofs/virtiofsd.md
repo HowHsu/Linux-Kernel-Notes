@@ -18,25 +18,32 @@ Let's first look at a graph which shows the relationship of the main classes
 - guest kernel page cache: GCache
 - host kern el page cache: HCache
 
-O_DIRECT: vfs flag, users can set it when opening a file
-FOPEN_DIRECT_IO: fuse flag, users can set it when starting virtiofsd by `--cache`
+- `O_DIRECT`: vfs flag, users can set it when opening a file
+- `FOPEN_DIRECT_IO`: FUSE flag, FUSE hand over the `bypass pagecache` control to
+backend fs of FUSE. Specifically for virtiofs, it all depends on `CachePolicy`,
+**once a file is opened, `FOPEN_DIRECT_IO = !is_dir && CachePolicy::Never`**
 
 - `--allow-direct-io true`
 This means we respect the original IO flag(vfs flag) of how we leverage the host
 page cache
+
 ```
 vfs\fuse    FOPEN_DIRECT_IO(--cache=never)	      !FOPEN_DIRECT_IO(--cache=auto/always)
-O_DIRECT        !GCache   !HCache                     !GCache  !HCache
+O_DIRECT        !GCache   !HCache                      !GCache  !HCache
 !O_DIRECT	!GCache    HCache                      GCache   HCache
 ```
 
-- `--allow-direct-io false (default)`
-This means we see all the IO requests from guest as buffered IO requests on host
-```
-vfs\fuse    FOPEN_DIRECT_IO(--cache=never)	      !FOPEN_DIRECT_IO(--cache=auto/always)
-O_DIRECT        !GCache    HCache                     !GCache   HCache
-!O_DIRECT	!GCache    HCache                      GCache   HCache
-```
+Here note the `O_DIRECT && !FOPEN_DIRECT_IO` case, `FOPEN_DIRECT_IO` is for buffered IO.
+**Just regard the `FOPEN_DIRECT_IO` as another restriction comes from FUSE backend
+fs, which obeys the frontend `O_DIRECT` semantics**
+To figure out the guest pagecache usage, just follow:
+
+- `O_DIRECT` is set, direct IO, bypass pagecache.
+- `O_DIRECT` isn't set, buffered IO, wait, check fuse flag
+	- `FOPEN_DIRECT_IO` is set, ok, backend restriction, bypass pagecache
+	- `FOPEN_DIRECT_IO` isn't set, ok, real buffered IO
+
+
 ### a more clear inclusion
 
 for guest page cache:
