@@ -18,6 +18,7 @@ This blog is based on github pages, comments are welcome through github issues :
 * ### VFS
     * #### [dentry_inode](./kernel/vfs/dentry_inode.md)
     * #### [mount](./kernel/vfs/mount.md)
+    * #### [mount_lock](./kernel/vfs/mount_lock.md)
     * #### [extent](./kernel/vfs/extent.md)
     * #### [iomap](./kernel/vfs/iomap.md)
     * #### [open](./kernel/vfs/open.md)
