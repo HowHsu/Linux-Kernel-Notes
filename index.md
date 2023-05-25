@@ -22,7 +22,10 @@ This blog is based on github pages, comments are welcome through github issues :
     * #### [extent](./kernel/vfs/extent.md)
     * #### [iomap](./kernel/vfs/iomap.md)
     * #### [open](./kernel/vfs/open.md)
-    * #### [bind_mount(WIP)](./kernel/vfs/bind_mount.md)
+    * #### [bind_mount(WIP)](./kernel/vfs/bind_mount/bind_mount.md)
+    	* ##### [lock_mount()(WIP)](./kernel/vfs/bind_mount/lock_mount.md)
+    	* ##### [__do_loopback()(WIP)](./kernel/vfs/bind_mount/__do_loopback.md)
+    	* ##### [graft_tree()(WIP)](./kernel/vfs/bind_mount/graft_tree.md)
     * #### [selinux(WIP)](./kernel/vfs/selinux.md)
     * #### [posix_acl(WIP)](./kernel/vfs/posix_acl.md)
 * ### virtiofs
