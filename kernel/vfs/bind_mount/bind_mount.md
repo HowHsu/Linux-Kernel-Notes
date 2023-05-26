@@ -169,10 +169,9 @@ former(not by pointer)
 
 - `mnt = __do_loopback(&old_path, recurse);`
 This basically create a new `struct mount` based on the parent mount of the source
-directory.(let's assume recurse = true for now)
-**Note: (pick up the above example) here the parent mount is not for `a` but for `b`,
-because when we get the `old_path`, we already traverse the mount tree to find the
-deepest mount.**
+directory.(let's assume recurse = false for now)
+**Note: (pick up the above example) here the parent mount is not for `b` but for `a`,
+because when we get the `old_path`, we don't traverse its mounts**
 **Here remember it again, the source directory can be mountpoint too**
 
 
