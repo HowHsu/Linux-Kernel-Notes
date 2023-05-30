@@ -161,6 +161,7 @@ mount --bind x y
 Here what `lock_mount()` does is to find dentry of `d`, mark it with `DCACHE_MOUNTED`
 and then return the newly allocated `struct mountpoint`.
 
+More detail see: [lock_mount.md](./lock_mount.md)
 
 - `parent = real_mount(path->mnt);`
 Simple one, get the `struct mount` from its `struct vfsmount`, the latter is in the
@@ -174,7 +175,11 @@ directory.(let's assume recurse = false for now)
 because when we get the `old_path`, we don't traverse its mounts**
 **Here remember it again, the source directory can be mountpoint too**
 
+More detail see: [__do_loopback.md](./__do_loopback.md)
+
 
 - `err = graft_tree(mnt, parent, mp);`
 Ok, now we have a new mount, the parent mount of the target and a new mountpoint
 structure.  Let's install the new mount to the right position in the mount tree.
+
+More detail see: [graft_tree.md](./graft_tree.md)
