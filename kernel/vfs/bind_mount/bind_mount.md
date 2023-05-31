@@ -183,3 +183,44 @@ Ok, now we have a new mount, the parent mount of the target and a new mountpoint
 structure.  Let's install the new mount to the right position in the mount tree.
 
 More detail see: [graft_tree.md](./graft_tree.md)
+
+## 3. relationship of key structures
+
+```bash
+mount --bind a x
+mount --bind b x
+mount --bind c y
+mount --bind d y
+
+mount --bind x y
+
+```
+
+Let's still leverage this case: Say there is a, b, c, d, x, y directories under '/'. And then we do the above mount for them.
+How does it look? I've draw a picture to show the relationship
+between `struct mount`, `struct mountpoint` and `struct dentry`.
+For simplicity, I didn't add lines to link dentries, mount_hashtable and mountpoint_hashtable are ignored as well.
+
+![mount.drawio.svg](./images/mount.drawio.svg)
+
+I know it's still hard to figure it out, believe me, I've tried my best to make it clear...
+
+### 3.1 Question
+To test if you are really clear about mount, think about this case:
+
+```bash
+
+mkdir /a /b /c /d /x /y
+mkdir /b/b1 /b/b2
+touch /a/in_a /b/b1/in_b1 /b/b2/in_b2 /c/in_c /d/in_d /x/in_x /y/in_y
+mount --bind a x
+mount --bind b x
+mount --bind c y
+mount --bind d y
+
+mount --bind b/b1 b/b2
+mount --bind x y
+
+```
+
+Now answer: What can you see when you run `tree` at "/"?
