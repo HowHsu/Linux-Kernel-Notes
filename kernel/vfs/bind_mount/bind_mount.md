@@ -201,7 +201,7 @@ How does it look? I've draw a picture to show the relationship
 between `struct mount`, `struct mountpoint` and `struct dentry`.
 For simplicity, I didn't add lines to link dentries, mount_hashtable and mountpoint_hashtable are ignored as well.
 
-![mount.drawio.svg](./images/mount.drawio.svg)
+![mount.svg](./images/mount.jpg)
 
 I know it's still hard to figure it out, believe me, I've tried my best to make it clear...
 
