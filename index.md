@@ -28,6 +28,7 @@ This blog is based on github pages, comments are welcome through github issues :
     	* ##### [graft_tree()(WIP)](./kernel/vfs/bind_mount/graft_tree.md)
     * #### [selinux(WIP)](./kernel/vfs/selinux.md)
     * #### [posix_acl(WIP)](./kernel/vfs/posix_acl.md)
+    * #### [getdents64_and_dentry_and_fuse(WIP)](./kernel/vfs/getdents64_and_dentry_and_fuse.md)
 * ### virtiofs
     * #### [virtiofs](./kernel/virtiofs/virtiofs.md)
     * #### [virtiofsd](./kernel/virtiofs/virtiofsd.md)
