@@ -29,8 +29,10 @@ This blog is based on github pages, comments are welcome through github issues :
     * #### [selinux(WIP)](./kernel/vfs/selinux.md)
     * #### [posix_acl(WIP)](./kernel/vfs/posix_acl.md)
     * #### [getdents64_and_dentry_and_fuse(WIP)](./kernel/vfs/getdents64_and_dentry_and_fuse.md)
-    * #### [dentry_lifetime(TODO)](./kernel/vfs/dentry_lifetime.md)
-    * #### [page_cache_lifetime.md(TODO)](./kernel/vfs/page_cache_lifetime.md)
+    * #### [dentry_lifecycle(TODO)](./kernel/vfs/dentry_lifecycle.md)
+    * #### [page_cache_lifecycle.md(TODO)](./kernel/vfs/page_cache_lifecycle.md)
+    * #### [devtmpfs(TODO)](./kernel/vfs/devtmpfs.md)
+    * #### [bdev_filesystem(TODO)](./kernel/vfs/bdev.md)
 * ### virtiofs
     * #### [virtiofs](./kernel/virtiofs/virtiofs.md)
     * #### [virtiofsd](./kernel/virtiofs/virtiofsd.md)
