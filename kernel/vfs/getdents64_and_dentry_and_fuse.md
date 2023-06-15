@@ -49,6 +49,9 @@ So looks like ext4 sees those directory entries as filesystem metadata, (correct
 me if I'm wrong), because we know that the page cache of the device file is for
 fs metadata access acceleration, e.g. extent tree.
 
+Another case is xfs, it seems maintain directory's dir entries with its own managered
+memory. So directory page cache is really a filesystem specific thing.
+
 #### 2.1 a experiment for page cache
 To confirm which page cache is leveraged, I did a experiment: `ls` a directory
 twice and observe the buff cache(bdev device file cache) change:
@@ -81,8 +84,9 @@ remains same value. It's not scientific, but tells something anyway...
 ## fuse
 
 Ok, let's focus on `getdents64` in fuse filesystem, things are a bit different
-there.
-the `iterate_shared` member in fuse dir inode operation is `fuse_readdir()`
+there. Fuse filesystem uses individual directory page cache, just like normal files.
+The `iterate_shared` member (which is called by `getdents64`) in fuse dir inode
+operation is `fuse_readdir()`
 
 ```c
 
@@ -109,3 +113,36 @@ int fuse_readdir(struct file *file, struct dir_context *ctx)
 }
 
 ```
+
+The logic is clear, it first tries page cache if `FOPEN_CACHE_DIR` is set, and then
+the slow path----read dir entries from backend.
+
+- `fuse_readdir_cached(file, ctx)`
+
+The main logic of this is trying to find the pages in the page cache of the directory,
+and then kmap the pages and parse the entries in this page and emit them to user buffer.
+
+## virtiofs
+
+In the above section, you can see `FOPEN_CACHE_DIR` determines whether using directory
+page cache or not. In virtiofsd(rust version), it is set only in `cache=always` mode.
+Le't take a look how cache mode affects page cache lifecycle:
+
+- `cache=never`
+  no page cache
+
+- `cache=auto`
+  page cache destroyed when opening a file
+  (It's actually more complicated, dentry's entry_timeout affect the lifecycle of
+   page cache in an indirect way as well, detail see: [dentry_lifecycle](./dentry_lifecycle.md))
+
+- `cache=always`
+  page cache sticks to the memory forever
+
+So it's not legal to set `FOPEN_CACHE_DIR` in `cache=never` and not meaningful to
+set it in `cache=auto`, that's why virtiofs only set it in `cache=always` mode.
+But the key to make page cache sticky there is to set `FOPEN_KEEP_CACHE` which
+isn't set for directory file in `cache=always` mode now (2023/06/15), this is a bug.
+
+For this bug, I've filed a fix here:
+[passthrough: add KEEP_CACHE flag for directory file when cache=always](https://gitlab.com/virtio-fs/virtiofsd/-/merge_requests/172)
