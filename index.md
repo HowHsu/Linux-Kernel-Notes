@@ -33,6 +33,7 @@ This blog is based on github pages, comments are welcome through github issues :
     * #### [page_cache_lifecycle.md(TODO)](./kernel/vfs/page_cache_lifecycle.md)
     * #### [devtmpfs(TODO)](./kernel/vfs/devtmpfs.md)
     * #### [bdev_filesystem(TODO)](./kernel/vfs/bdev.md)
+    * #### [dentry_state(TODO)](./kernel/vfs/dentry_state.md)
 * ### virtiofs
     * #### [virtiofs](./kernel/virtiofs/virtiofs.md)
     * #### [virtiofsd](./kernel/virtiofs/virtiofsd.md)
